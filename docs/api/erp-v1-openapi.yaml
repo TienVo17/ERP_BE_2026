@@ -1,0 +1,2598 @@
+openapi: 3.1.0
+info:
+  title: ERP Operational Core API
+  version: 1.0.0
+  description: "Phase 1 production contract. Lifecycle and scope live in operational-core-v1-spec.md; shared rules live in api-conventions.md."
+servers:
+  - url: https://erp.example.invalid
+    description: "Same-site reverse proxy that forwards /api to the backend."
+paths:
+  /api/v1/auth/csrf:
+    get:
+      operationId: acquireCsrf
+      summary: "Acquire or reacquire the SPA CSRF token before an unsafe cookie-backed Auth call"
+      responses:
+        '200':
+          description: "CSRF token issued. Login and logout reset CSRF state, so the SPA must call this again afterwards."
+          headers:
+            Set-Cookie:
+              description: "CSRF cookie for the double-submit check. Never contains refresh material."
+              schema: { type: string }
+            Cache-Control:
+              description: "Always no-store."
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CsrfResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      summary: "Authenticate with login ID and password; the client cannot select a role"
+      security:
+        - csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: "Normal login returns an access JWT and sets the rotating refresh cookie. A user awaiting a forced change receives only the restricted challenge and no refresh cookie."
+          headers:
+            Set-Cookie:
+              description: "Secure HttpOnly SameSite=Strict refresh cookie scoped to /api/v1/auth. Absent for the password-change challenge."
+              schema: { type: string }
+            Cache-Control:
+              description: "Always no-store so the access token is never cached."
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/auth/refresh:
+    post:
+      operationId: refresh
+      summary: "Rotate the cookie-only refresh token"
+      description: "Requires both the refresh cookie and the CSRF header. Replaying a rotated token revokes the session family and returns REFRESH_REAUTH_REQUIRED."
+      security:
+        - refreshCookie: []
+          csrfToken: []
+      responses:
+        '200':
+          description: "Rotation succeeded; the response sets a new refresh cookie and advances the idle window."
+          headers:
+            Set-Cookie:
+              description: "Rotated Secure HttpOnly refresh cookie."
+              schema: { type: string }
+            Cache-Control:
+              description: "Always no-store."
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NormalAuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      summary: "Revoke the current session family and clear the refresh cookie"
+      description: "Normal sessions authenticate with the refresh cookie and CSRF header. A restricted password-change challenge has no refresh cookie and logs out with its bearer token."
+      security:
+        - refreshCookie: []
+          csrfToken: []
+        - bearerAuth: []
+      responses:
+        '204':
+          description: "Logged out. CSRF state is cleared, so the SPA reacquires a token before its next unsafe call."
+          headers:
+            Set-Cookie:
+              description: "Expired refresh cookie."
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: "Current identity, roles and effective permissions"
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: "Effective permissions are loaded per request from PostgreSQL, not from token claims."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUserResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/auth/sessions:
+    get:
+      operationId: listCurrentUserSessions
+      summary: "List the caller's own browser and device sessions"
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: "Sessions carry no token material. Sort allowlist is createdAt, lastRefreshedAt and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/auth/sessions/{sessionId}/revoke:
+    post:
+      operationId: revokeCurrentUserSession
+      summary: "Revoke one session owned by the caller"
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '204':
+          description: "Session revoked. Revoking the current session also clears its refresh cookie."
+          headers:
+            Set-Cookie:
+              description: "Expired refresh cookie when the caller revoked its own current session."
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/change-password:
+    post:
+      operationId: changePassword
+      summary: "Change the caller's password from a normal session or a one-time restricted challenge"
+      description: "A successful change invalidates the challenge, advances the credential generation, revokes previous sessions and issues a normal token pair."
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '200':
+          description: "Password changed; a normal access token and refresh cookie are issued."
+          headers:
+            Set-Cookie:
+              description: "New Secure HttpOnly refresh cookie."
+              schema: { type: string }
+            Cache-Control:
+              description: "Always no-store."
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NormalAuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/admin/users:
+    get:
+      operationId: listUsers
+      summary: "Paged user administration list"
+      description: "Only USER and STAFF principals are administrable. The migration-seeded SYSTEM principal that owns reference rows is never listed, updated, assigned roles or overrides, reset, or counted as a recovery-capable admin."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_USERS"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, DISABLED, ARCHIVED] }
+        - name: kind
+          in: query
+          description: "Allowlisted filter across administrable principal kinds."
+          schema: { type: string, enum: [USER, STAFF] }
+        - name: loginId
+          in: query
+          description: "Allowlisted canonical login ID filter."
+          schema: { type: string }
+        - name: name
+          in: query
+          description: "Allowlisted name filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is loginId, name, status and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createUser
+      summary: "Create a user with an admin-entered temporary password"
+      description: "The temporary password is accepted over TLS only, hashed immediately, never echoed or logged, and forces a password change."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_USERS"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreateRequest' }
+      responses:
+        '201':
+          description: "User created with mustChangePassword true and no role or override assignment."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{userId}:
+    get:
+      operationId: getUser
+      summary: "Read one user"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_USERS"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: "User profile, roles and overrides without credential material."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateUserProfile
+      summary: "Update editable profile fields only"
+      description: "Login ID is immutable. Status, roles and permission overrides have their own commands with their own permissions."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_USERS"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserProfileUpdateRequest' }
+      responses:
+        '200':
+          description: "Profile updated and audited."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{userId}/status:
+    put:
+      operationId: updateUserStatus
+      summary: "Enable, disable or archive a user"
+      description: "Disable and archive revoke every session. The command is rejected when its post-state would leave fewer than two independent recovery-capable admins."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_USERS"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserStatusUpdateRequest' }
+      responses:
+        '200':
+          description: "Status changed with an audited reason."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{userId}/roles:
+    put:
+      operationId: replaceUserRoles
+      summary: "Replace a user's role assignments"
+      description: "Separated from profile administration so that granting authority requires ADMIN:MANAGE_ROLES."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserRolesUpdateRequest' }
+      responses:
+        '200':
+          description: "Roles replaced, audited and effective on the next request."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{userId}/permission-overrides:
+    put:
+      operationId: replaceUserPermissionOverrides
+      summary: "Replace a user's explicit ALLOW and DENY overrides"
+      description: "Each override references a seeded permission ID. Explicit DENY always wins over ALLOW and role grants."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPermissionOverridesUpdateRequest' }
+      responses:
+        '200':
+          description: "Overrides replaced and audited."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{userId}/reset-password:
+    post:
+      operationId: resetUserPassword
+      summary: "Set a temporary password over TLS and force a change"
+      description: "The temporary password is never echoed, logged or written to audit payloads. All sessions of the target user are revoked. Because the reset removes the target from the recovery-capable set until the forced change completes, the command is destructive and is rejected when its post-state leaves fewer than two independent recovery-capable admins."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_USERS"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordRequest' }
+      responses:
+        '204':
+          description: "Password reset, sessions revoked and mustChangePassword set."
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/roles:
+    get:
+      operationId: listRoles
+      summary: "Paged role list"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: active
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: "Sort allowlist is code, name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RolePageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createRole
+      summary: "Create a role from the seeded permission catalog"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleRequest' }
+      responses:
+        '201':
+          description: "Role created."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/roles/{roleId}:
+    get:
+      operationId: getRole
+      summary: "Read one role"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '200':
+          description: "Role with its granted permission IDs."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateRole
+      summary: "Update a role's name, activation and grants"
+      description: "Role code is the immutable business key. Grants reference seeded permission IDs only."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleUpdateRequest' }
+      responses:
+        '200':
+          description: "Role updated and audited. Recovery-admin invariant is enforced on the post-state."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/permissions:
+    get:
+      operationId: listPermissions
+      summary: "Read the seeded permission catalog"
+      description: "The catalog is fixed by migration. Phase 1 has no endpoint that creates module or action codes."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ROLES"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: module
+          in: query
+          description: "Allowlisted module filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is module, action and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PermissionPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/login-events:
+    get:
+      operationId: listLoginEvents
+      summary: "Read the append-only login history"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:VIEW_AUDIT"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: userId
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, format: uuid }
+        - name: loginId
+          in: query
+          description: "Allowlisted attempted login ID filter."
+          schema: { type: string }
+        - name: outcome
+          in: query
+          description: "Allowlisted outcome filter."
+          schema: { type: string, enum: [SUCCESS, INVALID_CREDENTIALS, DISABLED, BLOCKED_IP, LOCKED, ERROR] }
+        - name: from
+          in: query
+          description: "Inclusive lower bound on occurredAt."
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: "Exclusive upper bound on occurredAt."
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: "Read-only events with no credential detail. Sort allowlist is occurredAt and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginEventPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/ip-allowlist:
+    get:
+      operationId: listIpAllowlist
+      summary: "Read allowlist entries; enforcement is deferred"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ALLOWLIST"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: active
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: "The response always reports enforced false. No request is blocked by this list in Phase 1. Sort allowlist is network, name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IpAllowlistPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createIpAllowlistEntry
+      summary: "Create one allowlist entry"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ALLOWLIST"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IpAllowlistCreateRequest' }
+      responses:
+        '201':
+          description: "Entry created with a canonical unique network."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IpAllowlistEntryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/ip-allowlist/{entryId}:
+    get:
+      operationId: getIpAllowlistEntry
+      summary: "Read one allowlist entry"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ALLOWLIST"
+      parameters:
+        - $ref: '#/components/parameters/EntryId'
+      responses:
+        '200':
+          description: "Entry with its optimistic version."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IpAllowlistEntryResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateIpAllowlistEntry
+      summary: "Update an allowlist entry name, network or activation"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ALLOWLIST"
+      parameters:
+        - $ref: '#/components/parameters/EntryId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IpAllowlistUpdateRequest' }
+      responses:
+        '200':
+          description: "Entry updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IpAllowlistEntryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteIpAllowlistEntry
+      summary: "Delete an allowlist entry"
+      description: "Allowlist entries carry no history obligation, so removal is a real delete guarded by If-Match rather than an archive transition."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ADMIN:MANAGE_ALLOWLIST"
+      parameters:
+        - $ref: '#/components/parameters/EntryId'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: "Entry deleted and audited."
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/currencies:
+    get:
+      operationId: listCurrencies
+      summary: "Read the seeded currency reference"
+      description: "Currency is read-only in Phase 1; there is no create, update or archive operation."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: active
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: "Sort allowlist is code and name."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrencyPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/master-data/uoms:
+    get:
+      operationId: listUoms
+      summary: "Paged unit of measure list"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+        - name: code
+          in: query
+          description: "Allowlisted canonical code filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is code, name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UomPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createUom
+      summary: "Create a unit of measure"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UomRequest' }
+      responses:
+        '201':
+          description: "Created with a canonical unique code."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UomResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/uoms/{id}:
+    get:
+      operationId: getUom
+      summary: "Read one unit of measure"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Unit of measure."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UomResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateUom
+      summary: "Update a unit of measure"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UomRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UomResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/uoms/{id}/archive:
+    post:
+      operationId: archiveUom
+      summary: "Archive a unit of measure"
+      description: "Archive replaces the historical Delete action. SALE holds no ARCHIVE permission."
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; references and history are preserved."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UomResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/exchange-rates:
+    get:
+      operationId: listExchangeRates
+      summary: "Paged monthly exchange rate list"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: month
+          in: query
+          description: "Allowlisted filter on the effective month."
+          schema: { $ref: '#/components/schemas/YearMonth' }
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: "One record per month carrying both rates. Sort allowlist is month and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeRatePageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createExchangeRate
+      summary: "Create the monthly rate record"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExchangeRateRequest' }
+      responses:
+        '201':
+          description: "Created; the effective month is unique and normalized to its first day."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeRateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/exchange-rates/{id}:
+    get:
+      operationId: getExchangeRate
+      summary: "Read one monthly rate record"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Monthly rate record."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeRateResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateExchangeRate
+      summary: "Update the monthly rate record"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExchangeRateRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeRateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/exchange-rates/{id}/archive:
+    post:
+      operationId: archiveExchangeRate
+      summary: "Archive the monthly rate record"
+      security:
+        - bearerAuth: []
+      x-required-permission: "ETC:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; snapshots taken by past documents remain valid."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeRateResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/customers:
+    get:
+      operationId: listCustomers
+      summary: "Paged customer list"
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+        - name: name
+          in: query
+          description: "Allowlisted name filter."
+          schema: { type: string }
+        - name: shortName
+          in: query
+          description: "Allowlisted canonical short name filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is name, shortName and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createCustomer
+      summary: "Create a customer"
+      description: "Contacts are managed through the contact sub-resource so that contact identity stays stable."
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerCreateRequest' }
+      responses:
+        '201':
+          description: "Created with an immutable canonical short name."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/customers/{id}:
+    get:
+      operationId: getCustomer
+      summary: "Read one customer with its contacts"
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Customer including active and archived contacts."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateCustomer
+      summary: "Update customer header fields"
+      description: "Short name is the immutable business key and is absent from this request."
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerUpdateRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/customers/{id}/archive:
+    post:
+      operationId: archiveCustomer
+      summary: "Archive a customer"
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; downstream references stay readable."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/customers/{id}/contacts:
+    get:
+      operationId: listCustomerContacts
+      summary: "List a customer's contacts"
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: "Sort allowlist is name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createCustomerContact
+      summary: "Add a contact to a customer"
+      description: "Setting isDefault true transactionally clears the previous active default; at most one active default exists."
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactCreateRequest' }
+      responses:
+        '201':
+          description: "Contact created with a server-assigned stable identity."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/customers/{id}/contacts/{contactId}:
+    get:
+      operationId: getCustomerContact
+      summary: "Read one customer contact"
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/ContactId'
+      responses:
+        '200':
+          description: "Contact owned by the addressed customer."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateCustomerContact
+      summary: "Update one customer contact"
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactUpdateRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency with a preserved contact identity."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/customers/{id}/contacts/{contactId}/archive:
+    post:
+      operationId: archiveCustomerContact
+      summary: "Archive one customer contact"
+      description: "Archiving the default contact may leave the customer without a default."
+      security:
+        - bearerAuth: []
+      x-required-permission: "CUSTOMER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Contact archived; historical snapshots remain valid."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/suppliers:
+    get:
+      operationId: listSuppliers
+      summary: "Paged supplier list"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+        - name: name
+          in: query
+          description: "Allowlisted canonical name filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createSupplier
+      summary: "Create a supplier"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierCreateRequest' }
+      responses:
+        '201':
+          description: "Created with a canonical unique name."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/suppliers/{id}:
+    get:
+      operationId: getSupplier
+      summary: "Read one supplier with its contacts"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Supplier including active and archived contacts."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateSupplier
+      summary: "Update supplier header fields"
+      description: "Name changes are rejected once real purchase relationships exist; usage is derived server-side and never sent by the client."
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierUpdateRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/suppliers/{id}/archive:
+    post:
+      operationId: archiveSupplier
+      summary: "Archive a supplier"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; raw material references stay readable."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/suppliers/{id}/contacts:
+    get:
+      operationId: listSupplierContacts
+      summary: "List a supplier's contacts"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: "Sort allowlist is name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createSupplierContact
+      summary: "Add a contact to a supplier"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactCreateRequest' }
+      responses:
+        '201':
+          description: "Contact created with a server-assigned stable identity."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/suppliers/{id}/contacts/{contactId}:
+    get:
+      operationId: getSupplierContact
+      summary: "Read one supplier contact"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/ContactId'
+      responses:
+        '200':
+          description: "Contact owned by the addressed supplier."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateSupplierContact
+      summary: "Update one supplier contact"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactUpdateRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency with a preserved contact identity."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/suppliers/{id}/contacts/{contactId}/archive:
+    post:
+      operationId: archiveSupplierContact
+      summary: "Archive one supplier contact"
+      security:
+        - bearerAuth: []
+      x-required-permission: "SUPPLIER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Contact archived; historical snapshots remain valid."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/processes:
+    get:
+      operationId: listProcesses
+      summary: "Paged process list"
+      security:
+        - bearerAuth: []
+      x-required-permission: "PROCESS:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+        - name: name
+          in: query
+          description: "Allowlisted canonical name filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is sequenceNo, name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createProcess
+      summary: "Create a process"
+      description: "The QR value is required at creation and immutable afterwards."
+      security:
+        - bearerAuth: []
+      x-required-permission: "PROCESS:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcessCreateRequest' }
+      responses:
+        '201':
+          description: "Created with unique canonical name and unique QR value."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/processes/{id}:
+    get:
+      operationId: getProcess
+      summary: "Read one process"
+      security:
+        - bearerAuth: []
+      x-required-permission: "PROCESS:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Process."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateProcess
+      summary: "Update a process"
+      description: "The QR value is immutable and therefore absent from this request."
+      security:
+        - bearerAuth: []
+      x-required-permission: "PROCESS:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcessUpdateRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/processes/{id}/archive:
+    post:
+      operationId: archiveProcess
+      summary: "Archive a process"
+      security:
+        - bearerAuth: []
+      x-required-permission: "PROCESS:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; routing history stays readable."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/raw-materials:
+    get:
+      operationId: listRawMaterials
+      summary: "Paged raw material list"
+      description: "Raw material is master data only; Phase 1 exposes no inventory balance."
+      security:
+        - bearerAuth: []
+      x-required-permission: "RAW_MATERIAL:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+        - name: code
+          in: query
+          description: "Allowlisted canonical code filter."
+          schema: { type: string }
+        - name: name
+          in: query
+          description: "Allowlisted name filter."
+          schema: { type: string }
+        - name: supplierId
+          in: query
+          description: "Allowlisted supplier filter."
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: "Sort allowlist is code, name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawMaterialPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createRawMaterial
+      summary: "Create a raw material"
+      security:
+        - bearerAuth: []
+      x-required-permission: "RAW_MATERIAL:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RawMaterialRequest' }
+      responses:
+        '201':
+          description: "Created with a canonical unique code."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawMaterialResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/raw-materials/{id}:
+    get:
+      operationId: getRawMaterial
+      summary: "Read one raw material"
+      security:
+        - bearerAuth: []
+      x-required-permission: "RAW_MATERIAL:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Raw material."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawMaterialResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateRawMaterial
+      summary: "Update a raw material"
+      security:
+        - bearerAuth: []
+      x-required-permission: "RAW_MATERIAL:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RawMaterialRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawMaterialResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/raw-materials/{id}/archive:
+    post:
+      operationId: archiveRawMaterial
+      summary: "Archive a raw material"
+      security:
+        - bearerAuth: []
+      x-required-permission: "RAW_MATERIAL:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; the record stays readable for history."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawMaterialResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/finished-goods:
+    get:
+      operationId: listFinishedGoods
+      summary: "Paged finished good list"
+      description: "Media is deferred, so no image field is present in Phase 1."
+      security:
+        - bearerAuth: []
+      x-required-permission: "FINISHED_GOODS:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: status
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [ACTIVE, ARCHIVED] }
+        - name: productKind
+          in: query
+          description: "Allowlisted filter."
+          schema: { type: string, enum: [PRINT, WOVEN] }
+        - name: styleNo
+          in: query
+          description: "Allowlisted canonical style filter."
+          schema: { type: string }
+        - name: name
+          in: query
+          description: "Allowlisted name filter."
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Sort allowlist is styleNo, name and id."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinishedGoodPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createFinishedGood
+      summary: "Create a finished good"
+      security:
+        - bearerAuth: []
+      x-required-permission: "FINISHED_GOODS:CREATE"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinishedGoodRequest' }
+      responses:
+        '201':
+          description: "Created with the composite canonical uniqueness of kind, style, name, size and color."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinishedGoodResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/finished-goods/{id}:
+    get:
+      operationId: getFinishedGood
+      summary: "Read one finished good"
+      security:
+        - bearerAuth: []
+      x-required-permission: "FINISHED_GOODS:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: "Finished good."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinishedGoodResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateFinishedGood
+      summary: "Update a finished good"
+      security:
+        - bearerAuth: []
+      x-required-permission: "FINISHED_GOODS:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinishedGoodRequest' }
+      responses:
+        '200':
+          description: "Updated under optimistic concurrency."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinishedGoodResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/master-data/finished-goods/{id}/archive:
+    post:
+      operationId: archiveFinishedGood
+      summary: "Archive a finished good"
+      security:
+        - bearerAuth: []
+      x-required-permission: "FINISHED_GOODS:ARCHIVE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: "Archived; the record stays readable for history."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinishedGoodResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "RS256 access JWT signed by an RSA-3072 key with a kid header and a 15 minute lifetime."
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: "Required for unsafe cookie-backed Auth calls. Reacquire it after login and logout."
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: ERP_REFRESH
+      description: "Rotating opaque refresh token. Secure HttpOnly SameSite=Strict and scoped to /api/v1/auth. Only its hash is stored server-side."
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: "Zero-based page index."
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      description: "Page size."
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Sort:
+      name: sort
+      in: query
+      description: "Repeatable allowlisted sort term written as field,direction. Repeat the parameter to add a secondary term such as a stable id tiebreaker."
+      style: form
+      explode: true
+      schema:
+        type: array
+        items: { type: string, example: "code,asc" }
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ContactId:
+      name: contactId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RoleId:
+      name: roleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EntryId:
+      name: entryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: "Quoted optimistic version of the addressed resource."
+      schema: { type: string, pattern: '^"[0-9]+"$' }
+  responses:
+    BadRequest:
+      description: "INVALID_REQUEST or VALIDATION_FAILED, including unknown request members."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    Unauthenticated:
+      description: "UNAUTHENTICATED, CSRF_INVALID or REFRESH_REAUTH_REQUIRED. The SPA may attempt one refresh for these codes."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    Forbidden:
+      description: "FORBIDDEN when effective permissions deny the operation, or PASSWORD_CHANGE_REQUIRED when a restricted challenge calls anything other than change-password or logout. Neither code may trigger a refresh attempt."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    NotFound:
+      description: "NOT_FOUND for the addressed resource or ownership path."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    Conflict:
+      description: "VERSION_CONFLICT, DUPLICATE_BUSINESS_KEY, MASTER_IN_USE or RECOVERY_ADMIN_REQUIRED."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    RateLimited:
+      description: "RATE_LIMITED without disclosing whether an account or token exists."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+  schemas:
+    DecimalQuantity:
+      type: string
+      pattern: '^\d{1,14}(\.\d{1,4})?$'
+      description: "Non-negative decimal quantity carried as a JSON string with up to four decimal places."
+    DecimalPrice:
+      type: string
+      pattern: '^\d{1,12}(\.\d{1,6})?$'
+      description: "Non-negative reference price carried as a JSON string with up to six decimal places."
+    DecimalRate:
+      type: string
+      pattern: '^(?=.*[1-9])\d{1,12}(\.\d{1,6})?$'
+      description: "Positive exchange rate carried as a JSON string with up to six decimal places."
+    YearMonth:
+      type: string
+      pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+      description: "Effective month that persistence normalizes to the first calendar day."
+    ProblemDetail:
+      type: object
+      additionalProperties: true
+      required: [type, title, status, code, traceId]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string, description: "Stable machine-readable error code." }
+        traceId: { type: string }
+        fieldErrors:
+          type: array
+          items: { $ref: '#/components/schemas/FieldError' }
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [field, code, message]
+      properties:
+        field: { type: string }
+        code: { type: string }
+        message: { type: string }
+    PageMetadata:
+      type: object
+      additionalProperties: false
+      required: [number, size, totalElements, totalPages]
+      properties:
+        number: { type: integer, minimum: 0 }
+        size: { type: integer, minimum: 1, maximum: 100 }
+        totalElements: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+    AppliedFilters:
+      type: object
+      additionalProperties: true
+      description: "Echo of the accepted allowlisted filters only."
+    AppliedSort:
+      type: array
+      items: { type: string }
+      description: "Echo of the normalized allowlisted sort terms."
+    CsrfResponse:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, description: "Double-submit CSRF token. Not a credential for business APIs." }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [loginId, password]
+      properties:
+        loginId: { type: string, minLength: 1 }
+        password: { type: string, minLength: 1, writeOnly: true }
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword: { type: string, minLength: 1, writeOnly: true }
+        newPassword: { type: string, minLength: 12, writeOnly: true }
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [temporaryPassword]
+      properties:
+        temporaryPassword: { type: string, minLength: 12, writeOnly: true, description: "Accepted over TLS only and never returned, logged or audited." }
+        reason: { type: string, description: "Audited administrative reason." }
+    LoginResponse:
+      description: "Either a normal authenticated session or a restricted one-time password-change challenge. Clients branch on the required purpose member."
+      oneOf:
+        - $ref: '#/components/schemas/NormalAuthResponse'
+        - $ref: '#/components/schemas/PasswordChangeChallengeResponse'
+      discriminator:
+        propertyName: purpose
+        mapping:
+          session: '#/components/schemas/NormalAuthResponse'
+          password_change: '#/components/schemas/PasswordChangeChallengeResponse'
+    NormalAuthResponse:
+      type: object
+      additionalProperties: false
+      required: [purpose, accessToken, tokenType, expiresIn, session]
+      description: "The access token is returned to the SPA, held only in memory and never persisted client-side."
+      properties:
+        purpose: { type: string, enum: [session] }
+        accessToken: { type: string, description: "Access JWT for business APIs. Responses are sent with Cache-Control no-store." }
+        tokenType: { type: string, enum: [Bearer] }
+        expiresIn: { type: integer, description: "Access token lifetime in seconds." }
+        session: { $ref: '#/components/schemas/SessionResponse' }
+    PasswordChangeChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [purpose, accessToken, tokenType, expiresAt, user]
+      description: "Restricted challenge issued when a forced password change is pending. No refresh cookie is set and the challenge is invalid after one successful change."
+      properties:
+        purpose: { type: string, enum: [password_change] }
+        accessToken: { type: string, description: "Restricted token that can call only change-password and logout." }
+        tokenType: { type: string, enum: [Bearer] }
+        expiresAt: { type: string, format: date-time, description: "Challenge expiry; it is also invalidated after one successful change." }
+        user: { $ref: '#/components/schemas/ChallengeUserResponse' }
+    ChallengeUserResponse:
+      type: object
+      additionalProperties: false
+      required: [id, loginId, name]
+      description: "Minimal identity so the forced-change screen can render without calling a business endpoint."
+      properties:
+        id: { type: string, format: uuid }
+        loginId: { type: string }
+        name: { type: string }
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [id, createdAt, lastRefreshedAt, idleExpiresAt, absoluteExpiresAt, current]
+      properties:
+        id: { type: string, format: uuid }
+        clientIp: { type: string, description: "Trusted client IP recorded for the session." }
+        userAgent: { type: string, description: "Truncated user agent used to tell devices apart." }
+        createdAt: { type: string, format: date-time }
+        lastRefreshedAt: { type: string, format: date-time }
+        idleExpiresAt: { type: string, format: date-time, description: "Advances only on a successful refresh." }
+        absoluteExpiresAt: { type: string, format: date-time }
+        current: { type: boolean }
+    CurrentUserResponse:
+      type: object
+      additionalProperties: false
+      required: [id, loginId, name, status, roles, permissions, mustChangePassword]
+      properties:
+        id: { type: string, format: uuid }
+        loginId: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [ACTIVE, DISABLED, ARCHIVED] }
+        roles:
+          type: array
+          items: { type: string }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionResponse' }
+        mustChangePassword: { type: boolean }
+    UserCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, loginId, temporaryPassword, position, name]
+      description: "Creates the credential and profile only. Roles and overrides are assigned by their own commands."
+      properties:
+        kind: { type: string, enum: [USER, STAFF] }
+        loginId: { type: string, minLength: 1, description: "Canonical unique and immutable after creation." }
+        temporaryPassword: { type: string, minLength: 12, writeOnly: true, description: "Hashed immediately, never echoed, and forces a password change." }
+        position: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        groupName: { type: string }
+        division: { type: string }
+        sex: { type: string, enum: [MALE, FEMALE, OTHER] }
+        phone: { type: string }
+        email: { type: string, format: email }
+        remark: { type: string }
+    UserProfileUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [position, name]
+      description: "Profile fields only. Login ID, credentials, status, roles and overrides are out of scope for this command."
+      properties:
+        position: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        groupName: { type: string }
+        division: { type: string }
+        sex: { type: string, enum: [MALE, FEMALE, OTHER] }
+        phone: { type: string }
+        email: { type: string, format: email }
+        remark: { type: string }
+    UserStatusUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [ACTIVE, DISABLED, ARCHIVED] }
+        reason: { type: string, minLength: 1, description: "Audited administrative reason." }
+    UserRolesUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [roleIds]
+      properties:
+        roleIds:
+          type: array
+          items: { type: string, format: uuid }
+        reason: { type: string }
+    UserPermissionOverridesUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [overrides]
+      properties:
+        overrides:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionOverrideRequest' }
+        reason: { type: string }
+    PermissionOverrideRequest:
+      type: object
+      additionalProperties: false
+      required: [permissionId, effect]
+      description: "References a seeded permission row; arbitrary module or action strings are not accepted."
+      properties:
+        permissionId: { type: string, format: uuid }
+        effect: { type: string, enum: [ALLOW, DENY] }
+        reason: { type: string }
+    PermissionOverrideResponse:
+      type: object
+      additionalProperties: false
+      required: [permissionId, module, action, effect]
+      properties:
+        permissionId: { type: string, format: uuid }
+        module: { type: string }
+        action: { type: string }
+        effect: { type: string, enum: [ALLOW, DENY] }
+    UserResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, kind, loginId, name, position, roleIds, permissionOverrides, mustChangePassword, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, DISABLED, ARCHIVED] }
+        kind: { type: string, enum: [USER, STAFF] }
+        loginId: { type: string }
+        name: { type: string }
+        position: { type: string }
+        groupName: { type: string }
+        division: { type: string }
+        sex: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        remark: { type: string }
+        roleIds:
+          type: array
+          items: { type: string, format: uuid }
+        permissionOverrides:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionOverrideResponse' }
+        mustChangePassword: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RoleRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, permissionIds]
+      properties:
+        code: { type: string, pattern: '^[A-Z][A-Z0-9_]*$', description: "Immutable business key after creation." }
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        permissionIds:
+          type: array
+          items: { type: string, format: uuid }
+    RoleUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, active, permissionIds]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        active: { type: boolean }
+        permissionIds:
+          type: array
+          items: { type: string, format: uuid }
+        reason: { type: string }
+    RoleResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, code, name, active, permissionIds, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        active: { type: boolean }
+        permissionIds:
+          type: array
+          items: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PermissionResponse:
+      type: object
+      additionalProperties: false
+      required: [id, module, action, active]
+      properties:
+        id: { type: string, format: uuid }
+        module: { type: string }
+        action: { type: string }
+        description: { type: string }
+        active: { type: boolean }
+    LoginEventResponse:
+      type: object
+      additionalProperties: false
+      required: [id, loginId, outcome, occurredAt]
+      description: "Redacted append-only record. It never carries passwords, hashes, tokens or SQL detail."
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid, description: "Absent when the attempted login ID matched no user." }
+        loginId: { type: string, description: "Attempted login ID." }
+        userName: { type: string }
+        outcome: { type: string, enum: [SUCCESS, INVALID_CREDENTIALS, DISABLED, BLOCKED_IP, LOCKED, ERROR] }
+        clientIp: { type: string }
+        ipName: { type: string, description: "Allowlist name snapshot taken when the event was recorded." }
+        userAgent: { type: string }
+        occurredAt: { type: string, format: date-time }
+    IpAllowlistCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [network, name]
+      properties:
+        network: { type: string, description: "Canonical IPv4 or IPv6 address or CIDR network." }
+        name: { type: string, minLength: 1 }
+    IpAllowlistUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [network, name, active]
+      properties:
+        network: { type: string }
+        name: { type: string, minLength: 1 }
+        active: { type: boolean }
+    IpAllowlistEntryResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, network, name, active, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        network: { type: string }
+        name: { type: string }
+        active: { type: boolean, description: "Entry activation only. It does not enable enforcement." }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CurrencyResponse:
+      type: object
+      additionalProperties: false
+      required: [code, name, active]
+      properties:
+        code: { type: string, pattern: '^[A-Z]{3}$' }
+        name: { type: string }
+        active: { type: boolean }
+    UomRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { type: string, minLength: 1, description: "Canonical unique code." }
+        name: { type: string }
+    UomResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, code, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        code: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ExchangeRateRequest:
+      type: object
+      additionalProperties: false
+      required: [month, vndUsdRate, wonUsdRate]
+      description: "One record per effective month carrying both USD-base rates, matching the unique monthly row in persistence."
+      properties:
+        month: { $ref: '#/components/schemas/YearMonth' }
+        vndUsdRate: { $ref: '#/components/schemas/DecimalRate' }
+        wonUsdRate: { $ref: '#/components/schemas/DecimalRate' }
+        source: { type: string, description: "Optional provenance label for the fetched rates." }
+    ExchangeRateResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, month, vndUsdRate, wonUsdRate, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        month: { $ref: '#/components/schemas/YearMonth' }
+        vndUsdRate: { $ref: '#/components/schemas/DecimalRate' }
+        wonUsdRate: { $ref: '#/components/schemas/DecimalRate' }
+        source: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ContactCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        division: { type: string }
+        name: { type: string, minLength: 1 }
+        telephone: { type: string }
+        email: { type: string, format: email }
+        remark: { type: string }
+        isDefault: { type: boolean, default: false, description: "At most one active default per owner; setting it clears the previous default." }
+    ContactUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        division: { type: string }
+        name: { type: string, minLength: 1 }
+        telephone: { type: string }
+        email: { type: string, format: email }
+        remark: { type: string }
+        isDefault: { type: boolean, description: "At most one active default per owner. Omitting it leaves the current default unchanged; clearing a default is done by promoting another contact." }
+    ContactResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, name, isDefault, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid, description: "Stable contact identity that survives owner updates." }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        division: { type: string }
+        name: { type: string }
+        telephone: { type: string }
+        email: { type: string }
+        remark: { type: string }
+        isDefault: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CustomerCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [shortName, name, currencyCode]
+      properties:
+        shortName: { type: string, minLength: 1, description: "Canonical unique business key; immutable after creation." }
+        name: { type: string, minLength: 1 }
+        address: { type: string }
+        telephone: { type: string }
+        currencyCode: { type: string, pattern: '^[A-Z]{3}$' }
+    CustomerUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, currencyCode]
+      description: "Short name is immutable in persistence and therefore absent here."
+      properties:
+        name: { type: string, minLength: 1 }
+        address: { type: string }
+        telephone: { type: string }
+        currencyCode: { type: string, pattern: '^[A-Z]{3}$' }
+    CustomerResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, shortName, name, currencyCode, contacts, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        shortName: { type: string }
+        name: { type: string }
+        address: { type: string }
+        telephone: { type: string }
+        currencyCode: { type: string }
+        contacts:
+          type: array
+          items: { $ref: '#/components/schemas/ContactResponse' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    SupplierCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, description: "Canonical unique business key." }
+        address: { type: string }
+        telephone: { type: string }
+    SupplierUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      description: "Usage locks are derived from real relationships; the client never sends a usage flag."
+      properties:
+        name: { type: string, minLength: 1 }
+        address: { type: string }
+        telephone: { type: string }
+    SupplierResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, name, contacts, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        name: { type: string }
+        address: { type: string }
+        telephone: { type: string }
+        contacts:
+          type: array
+          items: { $ref: '#/components/schemas/ContactResponse' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ProcessCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, sequenceNo, qrValue]
+      properties:
+        name: { type: string, minLength: 1, description: "Canonical unique name." }
+        sequenceNo: { type: integer, minimum: 1 }
+        qrValue: { type: string, minLength: 1, description: "Unique and immutable after creation." }
+    ProcessUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, sequenceNo]
+      description: "The QR value is immutable in persistence and therefore absent here."
+      properties:
+        name: { type: string, minLength: 1 }
+        sequenceNo: { type: integer, minimum: 1 }
+    ProcessResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, name, sequenceNo, qrValue, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        name: { type: string }
+        sequenceNo: { type: integer }
+        qrValue: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RawMaterialRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, uomId, currencyCode]
+      description: "Master data only. Inventory, balance and usage flags are not accepted."
+      properties:
+        category: { type: string }
+        code: { type: string, minLength: 1, description: "Canonical unique code." }
+        name: { type: string, minLength: 1 }
+        specification: { type: string }
+        size: { type: string }
+        color: { type: string }
+        uomId: { type: string, format: uuid }
+        referencePrice: { $ref: '#/components/schemas/DecimalPrice' }
+        currencyCode: { type: string, pattern: '^[A-Z]{3}$' }
+        supplierId: { type: string, format: uuid }
+        safetyStockQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        remark: { type: string }
+    RawMaterialResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, code, name, uomId, currencyCode, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        category: { type: string }
+        code: { type: string }
+        name: { type: string }
+        specification: { type: string }
+        size: { type: string }
+        color: { type: string }
+        uomId: { type: string, format: uuid }
+        uomCode: { type: string }
+        referencePrice: { $ref: '#/components/schemas/DecimalPrice' }
+        currencyCode: { type: string }
+        supplierId: { type: string, format: uuid }
+        supplierName: { type: string }
+        safetyStockQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        remark: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    FinishedGoodRequest:
+      type: object
+      additionalProperties: false
+      required: [productKind, styleNo, name, uomId]
+      dependentRequired:
+        referencePrice: [currencyCode]
+        currencyCode: [referencePrice]
+      description: "Reference price and currency are optional but must be supplied together or omitted together, matching the both-or-neither database check. Media fields are not accepted in Phase 1."
+      properties:
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        size: { type: string }
+        color: { type: string }
+        uomId: { type: string, format: uuid }
+        referencePrice: { $ref: '#/components/schemas/DecimalPrice' }
+        currencyCode: { type: string, pattern: '^[A-Z]{3}$' }
+    FinishedGoodResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, productKind, styleNo, name, uomId, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string }
+        name: { type: string }
+        size: { type: string }
+        color: { type: string }
+        uomId: { type: string, format: uuid }
+        uomCode: { type: string }
+        referencePrice: { $ref: '#/components/schemas/DecimalPrice' }
+        currencyCode: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    SessionPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SessionResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    UserPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/UserResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    RolePageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RoleResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    PermissionPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    LoginEventPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LoginEventResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    IpAllowlistPageResponse:
+      type: object
+      additionalProperties: false
+      required: [enforced, items, page, filters, sort]
+      properties:
+        enforced: { type: boolean, enum: [false], description: "Phase 1 never enforces the allowlist." }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/IpAllowlistEntryResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    CurrencyPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CurrencyResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    UomPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/UomResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    ExchangeRatePageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ExchangeRateResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    ContactPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ContactResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    CustomerPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CustomerResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    SupplierPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SupplierResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    ProcessPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ProcessResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    RawMaterialPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RawMaterialResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    FinishedGoodPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/FinishedGoodResponse' }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }

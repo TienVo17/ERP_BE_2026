@@ -12,9 +12,10 @@
 *.pfx
 *.jks
 
-# IDE metadata
+# IDE and local agent metadata
 .idea/
 .vscode/
+.claude/
 *.iml
 .classpath
 .project

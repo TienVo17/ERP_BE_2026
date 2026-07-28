@@ -309,3 +309,10 @@ Khi user duyệt logical schema:
 - [ERP data dictionary](erp-data-dictionary.md)
 - [Evidence and requirements](../../plans/260728-0906-postgresql-erp-schema/evidence-and-requirements.md)
 - [Frontend contract mapping](../../plans/260728-0906-postgresql-erp-schema/frontend-contract-mapping.md)
+- [Operational Core v1 — Phase 1 source of truth](../operational-core-v1-spec.md)
+- [API v1 OpenAPI contract](../api/erp-v1-openapi.yaml)
+- [Authentication and authorization](../security/authentication-and-authorization.md)
+
+## Phase 1 auth/session extension status
+
+The D1-D12/current architecture decisions above remain preserved historical database design. Phase 1 freezes the application contract before implementation: V011+ will add only forward auth/session/reset and SALE-baseline grant changes, with least-privilege grants for every new object. The authoritative session, CSRF, key-ring, recovery-admin, permission-precedence, and allowlist-configuration semantics are linked in the Operational Core v1 and security documents above; this architecture document is not rewritten by that contract freeze.
