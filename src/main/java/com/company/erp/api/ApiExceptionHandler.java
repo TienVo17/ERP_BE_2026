@@ -1,6 +1,5 @@
 package com.company.erp.api;
 
-import java.net.URI;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -9,7 +8,6 @@ import java.util.Map;
 
 import jakarta.servlet.http.HttpServletRequest;
 
-import org.slf4j.MDC;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
@@ -31,12 +29,16 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
-    private static final String TRACE_ID = "traceId";
+    private final ApiProblemDetails problemDetails;
+
+    public ApiExceptionHandler(ApiProblemDetails problemDetails) {
+        this.problemDetails = problemDetails;
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<ProblemDetail> handleValidation(
             MethodArgumentNotValidException exception, HttpServletRequest request) {
-        ProblemDetail problem = problem(
+        ProblemDetail problem = problemDetails.create(
                 ApiErrorCode.VALIDATION_FAILED,
                 "One or more fields are invalid.",
                 request);
@@ -51,7 +53,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(HandlerMethodValidationException.class)
     ResponseEntity<ProblemDetail> handleMethodValidation(
             HandlerMethodValidationException exception, HttpServletRequest request) {
-        ProblemDetail problem = problem(
+        ProblemDetail problem = problemDetails.create(
                 ApiErrorCode.VALIDATION_FAILED,
                 "One or more request parameters are invalid.",
                 request);
@@ -66,7 +68,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ProblemDetail> handleInvalidRequest(
             HttpMessageNotReadableException exception, HttpServletRequest request) {
-        return response(problem(
+        return response(problemDetails.create(
                 ApiErrorCode.INVALID_REQUEST,
                 "The request body is malformed or contains an unknown property.",
                 request), ApiErrorCode.INVALID_REQUEST.status());
@@ -75,7 +77,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(DuplicateKeyException.class)
     ResponseEntity<ProblemDetail> handleDuplicate(
             DuplicateKeyException exception, HttpServletRequest request) {
-        return response(problem(
+        return response(problemDetails.create(
                 ApiErrorCode.DUPLICATE_BUSINESS_KEY,
                 "A resource with the same business key already exists.",
                 request), ApiErrorCode.DUPLICATE_BUSINESS_KEY.status());
@@ -84,7 +86,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(OptimisticLockingFailureException.class)
     ResponseEntity<ProblemDetail> handleOptimisticConflict(
             OptimisticLockingFailureException exception, HttpServletRequest request) {
-        return response(problem(
+        return response(problemDetails.create(
                 ApiErrorCode.VERSION_CONFLICT,
                 "The resource changed after it was read.",
                 request), ApiErrorCode.VERSION_CONFLICT.status());
@@ -93,7 +95,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(AuthenticationException.class)
     ResponseEntity<ProblemDetail> handleUnauthenticated(
             AuthenticationException exception, HttpServletRequest request) {
-        return response(problem(
+        return response(problemDetails.create(
                 ApiErrorCode.UNAUTHENTICATED,
                 "Valid authentication is required.",
                 request), ApiErrorCode.UNAUTHENTICATED.status());
@@ -102,7 +104,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<ProblemDetail> handleForbidden(
             AccessDeniedException exception, HttpServletRequest request) {
-        return response(problem(
+        return response(problemDetails.create(
                 ApiErrorCode.FORBIDDEN,
                 "The authenticated principal may not perform this operation.",
                 request), ApiErrorCode.FORBIDDEN.status());
@@ -111,21 +113,10 @@ public class ApiExceptionHandler {
     @ExceptionHandler(ResourceNotFoundException.class)
     ResponseEntity<ProblemDetail> handleNotFound(
             ResourceNotFoundException exception, HttpServletRequest request) {
-        return response(problem(
+        return response(problemDetails.create(
                 ApiErrorCode.NOT_FOUND,
                 "The requested resource does not exist.",
                 request), ApiErrorCode.NOT_FOUND.status());
-    }
-
-    private static ProblemDetail problem(
-            ApiErrorCode errorCode, String detail, HttpServletRequest request) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(errorCode.status(), detail);
-        problem.setType(errorCode.type());
-        problem.setTitle(errorCode.title());
-        problem.setInstance(URI.create(request.getRequestURI()));
-        problem.setProperty("code", errorCode.name());
-        problem.setProperty(TRACE_ID, traceId(request));
-        return problem;
     }
 
     private static ResponseEntity<ProblemDetail> response(ProblemDetail problem, HttpStatus status) {
@@ -177,13 +168,5 @@ public class ApiExceptionHandler {
             normalized.append(Character.toUpperCase(current));
         }
         return normalized.toString().toUpperCase(Locale.ROOT);
-    }
-
-    private static String traceId(HttpServletRequest request) {
-        String traceId = MDC.get(TRACE_ID);
-        if (traceId == null || traceId.isBlank()) {
-            traceId = request.getHeader("X-Trace-Id");
-        }
-        return traceId == null || traceId.isBlank() ? "unavailable" : traceId;
     }
 }

@@ -21,6 +21,7 @@ import org.springframework.security.authentication.AuthenticationCredentialsNotF
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.validation.beanvalidation.MethodValidationAdapter;
+import tools.jackson.databind.json.JsonMapper;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
@@ -33,7 +34,7 @@ class ApiExceptionHandlerTest {
 
     @BeforeEach
     void setUp() {
-        handler = new ApiExceptionHandler();
+        handler = new ApiExceptionHandler(new ApiProblemDetails(JsonMapper.builder().build()));
         request = new MockHttpServletRequest("POST", "/api/v1/test");
     }
 

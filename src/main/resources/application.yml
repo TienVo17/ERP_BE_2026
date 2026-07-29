@@ -1,8 +1,12 @@
 spring:
   application:
     name: be-erp
+  datasource:
+    url: ${ERP_DB_URL:}
+    username: ${ERP_DB_RUNTIME_USERNAME:}
+    password: ${ERP_DB_RUNTIME_PASSWORD:}
   flyway:
-    enabled: true
+    enabled: ${ERP_FLYWAY_ENABLED:false}
   sql:
     init:
       mode: never
