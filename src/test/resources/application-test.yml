@@ -1,0 +1,13 @@
+spring:
+  flyway:
+    enabled: true
+  sql:
+    init:
+      mode: never
+
+erp:
+  security:
+    key-ring:
+      active-kid: test-ephemeral-rsa-3072
+      private-key-location: ""
+      public-key-locations: []

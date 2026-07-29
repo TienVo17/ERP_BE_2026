@@ -315,4 +315,8 @@ Khi user duyệt logical schema:
 
 ## Phase 1 auth/session extension status
 
-The D1-D12/current architecture decisions above remain preserved historical database design. Phase 1 freezes the application contract before implementation: V011+ will add only forward auth/session/reset and SALE-baseline grant changes, with least-privilege grants for every new object. The authoritative session, CSRF, key-ring, recovery-admin, permission-precedence, and allowlist-configuration semantics are linked in the Operational Core v1 and security documents above; this architecture document is not rewritten by that contract freeze.
+The D1-D12/current architecture decisions above remain preserved historical database design. Phase 1 froze the application contract before implementation. V011 now adds `app_user.must_change_password` and `password_generation`, the `identity.auth_session` and `identity.refresh_token` persistence required for rotating hash-only refresh tokens, the approved SALE master-data grants, and explicit least-privilege grants on its new objects. V001-V010 remain byte-identical.
+
+The backend test profile uses PostgreSQL 16 Testcontainers with Flyway. `mvn test` includes the `*IT` classes and verifies both empty-database V001→V011 migration and V010→V011 upgrade, a separate runtime database role, append-only audit/login protection, and the absence of H2. Production deployment still creates the migration owner and runtime role externally and configures `erp.runtime_role` before Flyway runs; application source contains no database credentials.
+
+The authoritative session, CSRF, key-ring, recovery-admin, permission-precedence, and allowlist-configuration semantics remain in the linked Operational Core v1 and security documents; this architecture document does not duplicate those application contracts.
