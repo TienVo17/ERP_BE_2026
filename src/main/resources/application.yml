@@ -21,10 +21,14 @@ erp:
     issuer: https://erp.example.invalid
     audience: erp-api
     access-ttl: 15m
+    password-change-ttl: 5m
+    accepted-clock-skew: 30s
     refresh-absolute-ttl: 8h
     refresh-idle-ttl: 60m
     login-rate-limit-per-minute: 10
     refresh-rate-limit-per-minute: 120
+    deployment-instances: ${ERP_DEPLOYMENT_INSTANCES:1}
+    trusted-proxy-addresses: ${ERP_TRUSTED_PROXY_ADDRESSES:}
     refresh-cookie:
       name: ERP_REFRESH
       path: /api/v1/auth
@@ -37,3 +41,8 @@ erp:
       active-kid: ${ERP_ACTIVE_KID:}
       private-key-location: ${ERP_PRIVATE_KEY_LOCATION:}
       public-key-locations: ${ERP_PUBLIC_KEY_LOCATIONS:}
+  bootstrap-admin:
+    enabled: ${ERP_BOOTSTRAP_ADMIN_ENABLED:false}
+    login-id: ${ERP_BOOTSTRAP_ADMIN_LOGIN_ID:}
+    name: ${ERP_BOOTSTRAP_ADMIN_NAME:}
+    secret-file: ${ERP_BOOTSTRAP_ADMIN_SECRET_FILE:}

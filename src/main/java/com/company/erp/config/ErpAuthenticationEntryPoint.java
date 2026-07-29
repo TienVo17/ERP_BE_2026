@@ -13,11 +13,11 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
 
 @Component
-final class ErpAuthenticationEntryPoint implements AuthenticationEntryPoint {
+public final class ErpAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
     private final ApiProblemDetails problemDetails;
 
-    ErpAuthenticationEntryPoint(ApiProblemDetails problemDetails) {
+    public ErpAuthenticationEntryPoint(ApiProblemDetails problemDetails) {
         this.problemDetails = problemDetails;
     }
 

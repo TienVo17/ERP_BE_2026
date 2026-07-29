@@ -80,12 +80,14 @@ class SecurityProblemDetailsIT {
     }
 
     @Test
-    void validCsrfAllowsAuthRequestToReachMvc() throws Exception {
+    void validCsrfAllowsAuthRequestToReachIdentityHandling() throws Exception {
         mockMvc.perform(post("/api/v1/auth/login")
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"loginId\":\"synthetic\",\"password\":\"synthetic\"}"))
-                .andExpect(status().isNotFound())
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"))
                 .andExpect(header().doesNotExist("WWW-Authenticate"));
     }
 }

@@ -19,10 +19,14 @@ public record ErpSecurityProperties(
         @NotBlank String issuer,
         @NotBlank String audience,
         @NotNull Duration accessTtl,
+        @NotNull Duration passwordChangeTtl,
+        @NotNull Duration acceptedClockSkew,
         @NotNull Duration refreshAbsoluteTtl,
         @NotNull Duration refreshIdleTtl,
         @Positive Integer loginRateLimitPerMinute,
         @Positive Integer refreshRateLimitPerMinute,
+        @Positive Integer deploymentInstances,
+        List<String> trustedProxyAddresses,
         @NotNull @Valid RefreshCookie refreshCookie,
         @NotNull @Valid KeyRing keyRing) {
 
@@ -30,17 +34,32 @@ public record ErpSecurityProperties(
         issuer = defaultIfBlank(issuer, "https://erp.example.invalid");
         audience = defaultIfBlank(audience, "erp-api");
         accessTtl = accessTtl == null ? Duration.ofMinutes(15) : accessTtl;
+        passwordChangeTtl = passwordChangeTtl == null ? Duration.ofMinutes(5) : passwordChangeTtl;
+        acceptedClockSkew = acceptedClockSkew == null ? Duration.ofSeconds(30) : acceptedClockSkew;
         refreshAbsoluteTtl = refreshAbsoluteTtl == null ? Duration.ofHours(8) : refreshAbsoluteTtl;
         refreshIdleTtl = refreshIdleTtl == null ? Duration.ofMinutes(60) : refreshIdleTtl;
         loginRateLimitPerMinute = loginRateLimitPerMinute == null ? 10 : loginRateLimitPerMinute;
         refreshRateLimitPerMinute = refreshRateLimitPerMinute == null ? 120 : refreshRateLimitPerMinute;
+        deploymentInstances = deploymentInstances == null ? 1 : deploymentInstances;
+        trustedProxyAddresses = trustedProxyAddresses == null
+                ? List.of()
+                : trustedProxyAddresses.stream()
+                        .map(String::trim)
+                        .filter(value -> !value.isBlank())
+                        .distinct()
+                        .toList();
         refreshCookie = refreshCookie == null ? new RefreshCookie(null, null, true, true, null) : refreshCookie;
         keyRing = keyRing == null ? new KeyRing(null, 0, null, null, null) : keyRing;
     }
 
-    @AssertTrue(message = "access TTL must be positive")
-    public boolean isAccessTtlPositive() {
-        return accessTtl != null && !accessTtl.isZero() && !accessTtl.isNegative();
+    public static ErpSecurityProperties defaults() {
+        return new ErpSecurityProperties(
+                null, null, null, null, null, null, null, null, null, null, null, null, null);
+    }
+
+    @AssertTrue(message = "access and challenge TTLs must be positive")
+    public boolean areAccessTtlsPositive() {
+        return isPositive(accessTtl) && isPositive(passwordChangeTtl) && isPositive(acceptedClockSkew);
     }
 
     @AssertTrue(message = "refresh TTLs must be positive")
@@ -53,6 +72,15 @@ public record ErpSecurityProperties(
     public boolean isRefreshIdleWithinAbsoluteLifetime() {
         return refreshIdleTtl == null || refreshAbsoluteTtl == null
                 || refreshIdleTtl.compareTo(refreshAbsoluteTtl) <= 0;
+    }
+
+    @AssertTrue(message = "in-memory rate limiting supports one application instance only")
+    public boolean isSingleInstanceDeployment() {
+        return deploymentInstances != null && deploymentInstances == 1;
+    }
+
+    private static boolean isPositive(Duration value) {
+        return value != null && !value.isZero() && !value.isNegative();
     }
 
     private static String defaultIfBlank(String value, String defaultValue) {

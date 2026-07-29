@@ -78,6 +78,7 @@ Stable error-code registry:
 | `RECOVERY_ADMIN_REQUIRED` | 409 | Post-state would drop below two recovery-capable admins |
 | `EXCHANGE_RATE_MISSING` | 409 | Required monthly rate is absent |
 | `RATE_LIMITED` | 429 | Trusted-IP throttle without account disclosure |
+| `INTERNAL_ERROR` | 500 | Unexpected server error; message never echoed to client |
 
 Every protected operation documents at least `401` and `403`, plus `400`, `404`, `409`, and `429` where applicable. Constraint violations map to these codes without exposing SQL detail.
 

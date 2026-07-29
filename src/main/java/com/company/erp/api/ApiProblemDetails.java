@@ -41,6 +41,9 @@ public final class ApiProblemDetails {
             HttpServletRequest request) throws IOException {
         response.setStatus(errorCode.status().value());
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+        if (request.getRequestURI().startsWith("/api/v1/auth/")) {
+            response.setHeader("Cache-Control", "no-store");
+        }
         objectMapper.writeValue(response.getOutputStream(), create(errorCode, detail, request));
     }
 

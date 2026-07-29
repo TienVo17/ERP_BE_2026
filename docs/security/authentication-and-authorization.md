@@ -7,19 +7,19 @@
 | `GET /api/v1/auth/csrf` | same-site anonymous/session request | issues or reacquires the SPA CSRF token/cookie |
 | `POST /auth/login` | CSRF; login ID/password | normal login returns an access JWT plus the refresh cookie; a pending forced change returns only the restricted challenge |
 | `POST /auth/refresh` | refresh cookie **and** CSRF | access JWT plus session view; rotated cookie only |
-| `POST /auth/logout` | refresh cookie + CSRF, or restricted challenge bearer | revokes the family and clears the cookie |
+| `POST /auth/logout` | CSRF required when refresh cookie present; or restricted challenge bearer with no cookie | revokes the family and clears the cookie; a challenge with a stale cookie revokes both the cookie's family and the challenge itself |
 | `GET /auth/me`, `GET /auth/sessions`, `POST /auth/sessions/{id}/revoke` | bearer JWT | current identity/session management; no cookie authentication |
 | `POST /auth/change-password` | bearer normal JWT or restricted challenge | one-time change, then a normal token pair |
 
-CSRF state is cleared or rotated at login and logout, so the SPA calls `GET /auth/csrf` before its next unsafe cookie-backed request; a stale or missing token returns `CSRF_INVALID`. The reverse proxy is same-site at `/api`. The production refresh cookie is `Secure`, `HttpOnly`, `SameSite=Strict`, and path-limited to `/api/v1/auth`. Cookie material is never readable by JavaScript and never appears in a response body or schema.
+CSRF state is cleared or rotated at login and logout, so the SPA calls `GET /auth/csrf` before its next unsafe cookie-backed request; a stale or missing token returns `CSRF_INVALID`. The reverse proxy is same-site at `/api`. The production refresh cookie is `Secure`, `HttpOnly`, `SameSite=Strict`, and path-limited to `/api/v1/auth`. Cookie material is never readable by JavaScript and never appears in a response body or schema. Logout requires CSRF validation whenever the request carries the refresh cookie, even if an Authorization bearer header is also present; a password-change challenge with no refresh cookie may log out with its bearer token alone.
 
 ## Token and session controls
 
-- Access JWT: RS256 signed by an RSA-3072 key, carries `kid`, `sub`, `sid`, `jti`, issuer/audience/time claims, and expires in 15 minutes. It is returned in the login/refresh/change-password JSON body, held only in browser memory, and served with `Cache-Control: no-store`.
+- Access JWT: RS256 signed by an RSA-3072 key, carries mandatory `kid` header, `sub`, `sid`, `jti`, issuer/audience/time claims, and expires in 15 minutes. A token without a `kid` header is rejected even when signed by a configured key. It is returned in the login/refresh/change-password JSON body, held only in browser memory, and served with `Cache-Control: no-store`.
 - Key ring: exactly one active private signer plus current and previous public verification keys. Retain the previous public key at least the access TTL plus accepted clock skew.
 - Refresh: opaque rotating token carried only in the `ERP_REFRESH` cookie. PostgreSQL stores its hash, family/session state, rotation/reuse/revocation metadata, absolute expiry (8 hours), and idle expiry (60 minutes).
 - Idle expiry advances only after a successful refresh; ordinary API activity and browser heartbeats do not write session state.
-- Multiple simultaneous browser/device sessions are allowed, listable with redacted client IP and user agent, and individually revocable. Disable and reset revoke every session.
+- Multiple simultaneous browser/device sessions are allowed, listable with redacted client IP and user agent (live sessions only; revoked and expired sessions are excluded), and individually revocable. Revoking an already-ended session returns `NOT_FOUND`. The session list accepts `sort` terms from an allowlisted set: `createdAt`, `lastRefreshedAt`, `id`; a non-allowlisted field returns `400 VALIDATION_FAILED`. Disable and reset revoke every session.
 - If rotation commits and its response is lost, reuse of the old token revokes the family and returns `REFRESH_REAUTH_REQUIRED`; no grace window or recovery secret exists.
 
 A restricted challenge is authenticated but not authorized for business APIs, so calling anything other than change-password or logout returns `403 PASSWORD_CHANGE_REQUIRED`, never `401`. The SPA must not treat that code as a session expiry and must not attempt a refresh, because a challenge has no refresh cookie and a terminal logout would destroy the one-time challenge.
@@ -34,9 +34,11 @@ Production bootstrap reads a mounted secret file or secret-manager value, forces
 
 No account lockout is permitted. A single backend instance applies trusted-client-IP in-memory limits of 10 login attempts/minute and 120 refresh attempts/minute. Responses are generic `429` and reveal neither account nor token existence. Horizontal deployment is prohibited until the limiter state is shared (for example, gateway or Redis) and the trusted-proxy boundary is validated.
 
+Trusted client IP resolution (`erp.security.trusted-proxy-addresses`, env `ERP_TRUSTED_PROXY_ADDRESSES`, default empty) governs how the rate limiter identifies the attacker address. When the immediate peer is not listed as a trusted proxy, only the socket peer address is used. When the immediate peer is trusted, `X-Forwarded-For` is parsed and walked right-to-left; trusted proxies are skipped, and the first non-trusted IP is used. The leftmost `X-Forwarded-For` element is attacker-controlled because proxies append to whatever the client sent. Only IP literals are accepted; hostnames are rejected and never resolved, preventing DNS-lookup DoS.
+
 ## Authorization
 
-Each bearer request validates issuer, audience, signature, `kid`, expiry, and subject/session identifiers. The server then loads the active user, the active auth session, and current effective permissions from PostgreSQL; long-lived JWT permission claims are not authoritative. This makes disable, logout, reset, role edits, and overrides effective at the next API boundary.
+Each bearer request validates issuer, audience, signature, mandatory `kid` header, expiry, and subject/session identifiers. The server then loads the active user, the active auth session, and current effective permissions from PostgreSQL; long-lived JWT permission claims are not authoritative. This makes disable, logout, reset, role edits, and overrides effective at the next API boundary.
 
 Permission resolution is deterministic:
 

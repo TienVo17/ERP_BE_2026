@@ -18,7 +18,8 @@ public enum ApiErrorCode {
     MASTER_IN_USE(HttpStatus.CONFLICT, "Master data is in use", "master-in-use"),
     RECOVERY_ADMIN_REQUIRED(HttpStatus.CONFLICT, "Recovery administrator required", "recovery-admin-required"),
     EXCHANGE_RATE_MISSING(HttpStatus.CONFLICT, "Exchange rate missing", "exchange-rate-missing"),
-    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Request rate exceeded", "rate-limited");
+    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Request rate exceeded", "rate-limited"),
+    INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected server error", "internal-error");
 
     private static final String TYPE_BASE = "https://erp.example.invalid/problems/";
 

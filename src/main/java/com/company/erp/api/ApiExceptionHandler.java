@@ -29,6 +29,9 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
+    private static final org.slf4j.Logger LOGGER =
+            org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
+
     private final ApiProblemDetails problemDetails;
 
     public ApiExceptionHandler(ApiProblemDetails problemDetails) {
@@ -72,6 +75,15 @@ public class ApiExceptionHandler {
                 ApiErrorCode.INVALID_REQUEST,
                 "The request body is malformed or contains an unknown property.",
                 request), ApiErrorCode.INVALID_REQUEST.status());
+    }
+
+    @ExceptionHandler(ApiException.class)
+    ResponseEntity<ProblemDetail> handleApiException(
+            ApiException exception, HttpServletRequest request) {
+        return response(problemDetails.create(
+                exception.errorCode(),
+                exception.getMessage(),
+                request), exception.errorCode().status());
     }
 
     @ExceptionHandler(DuplicateKeyException.class)
@@ -119,10 +131,33 @@ public class ApiExceptionHandler {
                 request), ApiErrorCode.NOT_FOUND.status());
     }
 
+    /**
+     * Last-resort handler so every API failure still uses the Problem Details envelope. The
+     * exception message is deliberately dropped: it can carry SQL or credential-adjacent detail.
+     * Spring's own web exceptions keep their standard handling, including the 404 for an
+     * unmapped path.
+     */
+    @ExceptionHandler(Exception.class)
+    ResponseEntity<ProblemDetail> handleUnexpected(Exception exception, HttpServletRequest request)
+            throws Exception {
+        if (exception instanceof org.springframework.web.ErrorResponse) {
+            throw exception;
+        }
+        LOGGER.error("Unhandled API failure at {}", request.getRequestURI(), exception);
+        return response(problemDetails.create(
+                ApiErrorCode.INTERNAL_ERROR,
+                "The request could not be completed.",
+                request), ApiErrorCode.INTERNAL_ERROR.status());
+    }
+
     private static ResponseEntity<ProblemDetail> response(ProblemDetail problem, HttpStatus status) {
-        return ResponseEntity.status(status)
-                .header(HttpHeaders.CONTENT_TYPE, "application/problem+json")
-                .body(problem);
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(status)
+                .header(HttpHeaders.CONTENT_TYPE, "application/problem+json");
+        if (problem.getInstance() != null
+                && problem.getInstance().getPath().startsWith("/api/v1/auth/")) {
+            response.cacheControl(org.springframework.http.CacheControl.noStore());
+        }
+        return response.body(problem);
     }
 
     private static Map<String, String> fieldError(FieldError error) {
