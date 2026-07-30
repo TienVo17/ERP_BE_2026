@@ -19,7 +19,7 @@ class DatabaseUpgradeIT {
     private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     @Test
-    void upgradesCleanV011DatabaseToV012WithoutLosingExistingRows() throws Exception {
+    void upgradesCleanV011DatabaseToV013WithoutLosingExistingRows() throws Exception {
         try (PostgreSQLContainer postgres = postgres("erp_upgrade_test")) {
             postgres.start();
             migrateToV011(postgres);
@@ -54,7 +54,7 @@ class DatabaseUpgradeIT {
                 }
             }
             assertThat(count(postgres, "sales.buyer_order", buyerOrderId)).isOne();
-            assertThat(currentVersion(postgres)).isEqualTo("012");
+            assertThat(currentVersion(postgres)).isEqualTo("013");
         }
     }
 
@@ -81,7 +81,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("012");
+            assertThat(currentVersion(postgres)).isEqualTo("013");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -146,6 +146,65 @@ class DatabaseUpgradeIT {
             assertThat(count(postgres, "delivery.delivery_note", deliveryId)).isOne();
             assertThat(status(postgres, "monthly_exchange_rate", rateId)).isEqualTo("ARCHIVED");
             assertThat(currentVersion(postgres)).isEqualTo("011");
+        }
+    }
+
+    @Test
+    void rejectsV011UpgradeWhenBuyerOrderItemReferencesArchivedFinishedGood() throws Exception {
+        try (PostgreSQLContainer postgres = postgres("erp_upgrade_finished_good_violation")) {
+            postgres.start();
+            migrateToV011(postgres);
+            UUID customerId = insertCustomer(postgres, "FG-CUSTOMER");
+            UUID buyerOrderId = insertBuyerOrder(postgres, customerId);
+            UUID finishedGoodId = insertFinishedGood(postgres);
+            insertBuyerOrderItem(postgres, buyerOrderId, finishedGoodId);
+            updateStatus(postgres, "finished_good", finishedGoodId, "ARCHIVED");
+
+            assertUpgradeRejected(postgres, "business data references an ARCHIVED Finished Good");
+
+            assertThat(status(postgres, "finished_good", finishedGoodId)).isEqualTo("ARCHIVED");
+            assertThat(currentVersion(postgres)).isEqualTo("012");
+        }
+    }
+
+    @Test
+    void migrationFailsFastForConcurrentBuyerOrderItemWriterThenSucceedsAfterWriterEnds() throws Exception {
+        try (PostgreSQLContainer postgres = postgres("erp_upgrade_item_writer_window")) {
+            postgres.start();
+            migrateToV011(postgres);
+            UUID customerId = insertCustomer(postgres, "ITEM-CUSTOMER");
+            UUID buyerOrderId = insertBuyerOrder(postgres, customerId);
+            UUID finishedGoodId = insertFinishedGood(postgres);
+
+            try (Connection writer = connection(postgres)) {
+                writer.setAutoCommit(false);
+                insertBuyerOrderItem(writer, buyerOrderId, finishedGoodId);
+
+                long startedAt = System.nanoTime();
+                assertThatThrownBy(() -> migrateToLatest(postgres))
+                        .isInstanceOf(FlywayException.class)
+                        .hasRootCauseInstanceOf(SQLException.class)
+                        .rootCause()
+                        .extracting(error -> ((SQLException) error).getSQLState())
+                        .isEqualTo("55P03");
+                assertThat(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - startedAt)).isLessThan(2);
+                assertThat(currentVersion(postgres)).isEqualTo("012");
+                writer.rollback();
+            }
+
+            migrateToLatest(postgres);
+            assertThat(currentVersion(postgres)).isEqualTo("013");
+            try (Connection connection = connection(postgres);
+                    var statement = connection.createStatement();
+                    var result = statement.executeQuery("""
+                            SELECT count(*)
+                            FROM pg_trigger
+                            WHERE tgname = 'trg_finished_good_usage_transition'
+                              AND NOT tgisinternal
+                            """)) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isOne();
+            }
         }
     }
 
@@ -222,6 +281,50 @@ class DatabaseUpgradeIT {
             statement.executeUpdate();
         }
         return id;
+    }
+
+    private static UUID insertFinishedGood(PostgreSQLContainer postgres) throws SQLException {
+        UUID id = UUID.randomUUID();
+        try (Connection connection = connection(postgres);
+                var statement = connection.prepareStatement("""
+                        INSERT INTO master_data.finished_good (
+                            id, product_kind, style_no, name, uom_id, created_by, updated_by
+                        ) VALUES (?, 'PRINT', ?, 'Upgrade Finished Good',
+                                  '10000000-0000-0000-0000-000000000002', ?, ?)
+                        """)) {
+            statement.setObject(1, id);
+            statement.setString(2, "UPGRADE-STYLE-" + id);
+            statement.setObject(3, SYSTEM_USER_ID);
+            statement.setObject(4, SYSTEM_USER_ID);
+            statement.executeUpdate();
+        }
+        return id;
+    }
+
+    private static void insertBuyerOrderItem(
+            PostgreSQLContainer postgres, UUID buyerOrderId, UUID finishedGoodId) throws SQLException {
+        try (Connection connection = connection(postgres)) {
+            insertBuyerOrderItem(connection, buyerOrderId, finishedGoodId);
+        }
+    }
+
+    private static void insertBuyerOrderItem(
+            Connection connection, UUID buyerOrderId, UUID finishedGoodId) throws SQLException {
+        try (var statement = connection.prepareStatement("""
+                INSERT INTO sales.buyer_order_item (
+                    id, buyer_order_id, line_no, is_custom, finished_good_id, product_kind_snapshot,
+                    style_no_snapshot, name_snapshot, uom_id, uom_code_snapshot, order_qty,
+                    production_qty, unit_price, currency_code, amount, created_by, updated_by
+                ) VALUES (?, ?, 1, false, ?, 'PRINT', 'STYLE', 'Upgrade Item',
+                          '10000000-0000-0000-0000-000000000002', 'EA', 1, 1, 0, 'USD', 0, ?, ?)
+                """)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, buyerOrderId);
+            statement.setObject(3, finishedGoodId);
+            statement.setObject(4, SYSTEM_USER_ID);
+            statement.setObject(5, SYSTEM_USER_ID);
+            statement.executeUpdate();
+        }
     }
 
     private static UUID insertProcess(PostgreSQLContainer postgres) throws SQLException {
@@ -371,6 +474,7 @@ class DatabaseUpgradeIT {
             case "customer" -> "master_data.customer";
             case "process_master" -> "master_data.process_master";
             case "monthly_exchange_rate" -> "master_data.monthly_exchange_rate";
+            case "finished_good" -> "master_data.finished_good";
             default -> throw new IllegalArgumentException("Unsupported upgrade fixture table");
         };
     }

@@ -33,12 +33,12 @@ class DatabaseMigrationIT {
     private DataSource dataSource;
 
     @Test
-    void appliesV001ThroughV012WithMasterUsageCoordination() {
+    void appliesV001ThroughV013WithMasterUsageCoordination() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
 
         assertThat(Flyway.configure().dataSource(dataSource).load().info().applied())
                 .extracting(info -> info.getVersion().toString())
-                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012");
+                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013");
 
         assertThat(columns(jdbc, "identity", "app_user"))
                 .contains("must_change_password", "password_generation");
@@ -64,6 +64,15 @@ class DatabaseMigrationIT {
                         WHERE c.relname = 'ix_delivery_note_used_exchange_rate'
                         """).query(String.class).single())
                 .contains("status", "POSTED", "REVERSED");
+
+        assertThat(triggerNames(jdbc, "master_data", "finished_good"))
+                .contains("trg_finished_good_00_usage_coordination", "trg_finished_good_usage_transition");
+        assertThat(triggerNames(jdbc, "sales", "buyer_order_item"))
+                .contains(
+                        "trg_buyer_order_item_insert_00_usage_coordination",
+                        "trg_buyer_order_item_update_00_usage_coordination",
+                        "trg_buyer_order_item_insert_active_finished_good",
+                        "trg_buyer_order_item_update_active_finished_good");
     }
 
     @Test
@@ -189,6 +198,7 @@ class DatabaseMigrationIT {
     void everyForwardObjectMigrationDeclaresRuntimePrivilegeHandling() throws Exception {
         String v011 = migration("V011__add_identity_sessions_and_sale_master_grants.sql");
         String v012 = migration("V012__index_exchange_rate_usage.sql");
+        String v013 = migration("V013__guard_finished_good_usage.sql");
 
         assertThat(v011)
                 .contains("current_setting('erp.runtime_role', true)")
@@ -205,6 +215,15 @@ class DatabaseMigrationIT {
                 .contains("SET search_path = pg_catalog")
                 .contains("REVOKE ALL ON FUNCTION master_data.require_active_customer_references() FROM PUBLIC")
                 .contains("REVOKE ALL ON FUNCTION master_data.coordinate_guarded_master_usage() FROM PUBLIC")
+                .doesNotContain("GRANT SELECT, INSERT, UPDATE ON ALL TABLES");
+        assertThat(v013)
+                .contains("MASTER_GUARD_MIGRATION_INVALID:")
+                .contains("IN SHARE ROW EXCLUSIVE MODE NOWAIT")
+                .contains("master_data.coordinate_guarded_master_usage()")
+                .doesNotContain("pg_catalog.pg_advisory_xact_lock(20260730, 2)")
+                .contains("SET search_path = pg_catalog")
+                .contains("REVOKE ALL ON FUNCTION master_data.require_active_finished_good_references() FROM PUBLIC")
+                .contains("REVOKE ALL ON FUNCTION master_data.validate_finished_good_usage_transition() FROM PUBLIC")
                 .doesNotContain("GRANT SELECT, INSERT, UPDATE ON ALL TABLES");
     }
 
@@ -238,6 +257,20 @@ class DatabaseMigrationIT {
                         SELECT column_name
                         FROM information_schema.columns
                         WHERE table_schema = :schema AND table_name = :table
+                        """)
+                .param("schema", schema)
+                .param("table", table)
+                .query(String.class)
+                .set();
+    }
+
+    private static Set<String> triggerNames(JdbcClient jdbc, String schema, String table) {
+        return jdbc.sql("""
+                        SELECT t.tgname
+                        FROM pg_trigger t
+                        JOIN pg_class c ON c.oid = t.tgrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = :schema AND c.relname = :table AND NOT t.tgisinternal
                         """)
                 .param("schema", schema)
                 .param("table", table)

@@ -4,7 +4,9 @@ import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import com.company.erp.masterdata.api.FinishedGoodController;
 import com.company.erp.masterdata.api.PartyMasterController;
+import com.company.erp.masterdata.api.RawMaterialController;
 import com.company.erp.masterdata.api.ProcessMasterController;
 import com.company.erp.masterdata.api.ReferenceMasterController;
 import org.junit.jupiter.api.Test;
@@ -53,8 +55,19 @@ class MasterDataPermissionMappingTest {
         expected.put("ProcessMasterController.get", "PROCESS:VIEW");
         expected.put("ProcessMasterController.update", "PROCESS:UPDATE");
         expected.put("ProcessMasterController.archive", "PROCESS:ARCHIVE");
+        expected.put("RawMaterialController.list", "RAW_MATERIAL:VIEW");
+        expected.put("RawMaterialController.create", "RAW_MATERIAL:CREATE");
+        expected.put("RawMaterialController.get", "RAW_MATERIAL:VIEW");
+        expected.put("RawMaterialController.update", "RAW_MATERIAL:UPDATE");
+        expected.put("RawMaterialController.archive", "RAW_MATERIAL:ARCHIVE");
+        expected.put("FinishedGoodController.list", "FINISHED_GOODS:VIEW");
+        expected.put("FinishedGoodController.create", "FINISHED_GOODS:CREATE");
+        expected.put("FinishedGoodController.get", "FINISHED_GOODS:VIEW");
+        expected.put("FinishedGoodController.update", "FINISHED_GOODS:UPDATE");
+        expected.put("FinishedGoodController.archive", "FINISHED_GOODS:ARCHIVE");
 
-        assertMappings(expected, ReferenceMasterController.class, PartyMasterController.class, ProcessMasterController.class);
+        assertMappings(expected, ReferenceMasterController.class, PartyMasterController.class,
+                ProcessMasterController.class, RawMaterialController.class, FinishedGoodController.class);
     }
 
     private static void assertMappings(Map<String, String> expected, Class<?>... controllers) {

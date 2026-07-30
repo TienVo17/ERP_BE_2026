@@ -171,6 +171,80 @@ class RuntimePrivilegeIT {
     }
 
     @Test
+    void runtimeBuyerOrderItemWritesEnforceV013WithoutHelperExecutePrivilege() throws Exception {
+        UUID actorId = createUser("runtime-finished-good-guard");
+        UUID customerId = UUID.randomUUID();
+        UUID buyerOrderId = UUID.randomUUID();
+        UUID finishedGoodId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection()) {
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO master_data.customer (
+                        id, short_name, name, currency_code, created_by, updated_by
+                    ) VALUES (?, ?, 'Guard Customer', 'USD', ?, ?)
+                    """)) {
+                statement.setObject(1, customerId);
+                statement.setString(2, "FGGUARD-" + customerId);
+                statement.setObject(3, actorId);
+                statement.setObject(4, actorId);
+                statement.executeUpdate();
+            }
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO sales.buyer_order (
+                        id, sys_po_no, order_type, customer_id, customer_name_snapshot,
+                        customer_short_name_snapshot, pic_source, pic_name_snapshot, buyer_po,
+                        po_date, delivery_date, created_by, updated_by
+                    ) VALUES (?, ?, 'STANDARD', ?, 'Guard Customer', 'FGGUARD',
+                        'CUSTOM', 'PIC', 'PO', CURRENT_DATE, CURRENT_DATE, ?, ?)
+                    """)) {
+                statement.setObject(1, buyerOrderId);
+                statement.setString(2, "SO-2026-%06d".formatted(Math.floorMod(UUID.randomUUID().hashCode(), 1_000_000)));
+                statement.setObject(3, customerId);
+                statement.setObject(4, actorId);
+                statement.setObject(5, actorId);
+                statement.executeUpdate();
+            }
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO master_data.finished_good (
+                        id, product_kind, style_no, name, uom_id, status, created_by, updated_by
+                    ) VALUES (?, 'PRINT', ?, 'Archived Finished Good',
+                              '10000000-0000-0000-0000-000000000002', 'ARCHIVED', ?, ?)
+                    """)) {
+                statement.setObject(1, finishedGoodId);
+                statement.setString(2, "ARCHIVED-STYLE-" + finishedGoodId);
+                statement.setObject(3, actorId);
+                statement.setObject(4, actorId);
+                statement.executeUpdate();
+            }
+        }
+
+        assertThatThrownBy(() -> asRuntime(connection -> {
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO sales.buyer_order_item (
+                        id, buyer_order_id, line_no, is_custom, finished_good_id, product_kind_snapshot,
+                        style_no_snapshot, name_snapshot, uom_id, uom_code_snapshot, order_qty,
+                        production_qty, unit_price, currency_code, amount, created_by, updated_by
+                    ) VALUES (?, ?, 1, false, ?, 'PRINT', 'STYLE', 'Guard Item',
+                              '10000000-0000-0000-0000-000000000002', 'EA', 1, 1, 0, 'USD', 0, ?, ?)
+                    """)) {
+                statement.setObject(1, UUID.randomUUID());
+                statement.setObject(2, buyerOrderId);
+                statement.setObject(3, finishedGoodId);
+                statement.setObject(4, actorId);
+                statement.setObject(5, actorId);
+                statement.executeUpdate();
+            }
+        })).isInstanceOf(SQLException.class)
+                .satisfies(error -> assertThat(((SQLException) error).getSQLState()).isEqualTo("23514"));
+
+        assertThatThrownBy(() -> asRuntime(connection -> {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("SELECT master_data.require_active_finished_good_references()");
+            }
+        })).isInstanceOf(SQLException.class)
+                .satisfies(error -> assertThat(((SQLException) error).getSQLState()).isEqualTo("42501"));
+    }
+
+    @Test
     void runtimeRoleDoesNotOwnMigrationHistory() {
         assertThatThrownBy(() -> asRuntime(connection -> {
             try (Statement statement = connection.createStatement()) {

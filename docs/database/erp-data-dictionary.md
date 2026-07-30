@@ -2,7 +2,7 @@
 
 ## Tổng quan
 
-Đây là logical reference đã áp dụng các quyết định được xác nhận. DDL triển khai được quản lý bằng Flyway qua V001-V012; tài liệu này mô tả table/column/type/constraint/index intent và phải được cập nhật cùng forward migrations.
+Đây là logical reference đã áp dụng các quyết định được xác nhận. DDL triển khai được quản lý bằng Flyway qua V001-V013; tài liệu này mô tả table/column/type/constraint/index intent và phải được cập nhật cùng forward migrations.
 
 ## Convention chung
 
@@ -367,6 +367,8 @@ Master only, không inventory accumulator.
 | common audit/version | — | No | audit |
 
 - Không có `inventory`, `balance`, `used_in_purchase_order` phase đầu.
+- `code` lưu canonical uppercase/trimmed, khớp unique index `upper(btrim(code))`.
+- Phase 1 chưa có bảng nào tham chiếu Raw Material nên không tồn tại usage guard nào để derive; update/archive luôn được phép và không được suy ra từ cờ do client gửi. Khi Procurement/RM inventory xuất hiện, guard mới phải dùng lại coordination model của V012/V013.
 
 ### `finished_good`
 
@@ -386,6 +388,9 @@ Master only, không inventory accumulator.
 
 - Unique canonical composite: product kind + style + name + normalized size + normalized color.
 - Check price/currency co-presence.
+- V013 Finished Good master UPDATE và `buyer_order_item` INSERT/UPDATE cùng lấy global transaction advisory lock của V012 trong `BEFORE STATEMENT`, trước master/FK row lock; sau đó trigger yêu cầu Finished Good `ACTIVE` cho reference mới. Row trigger chặn đổi product kind/style/name/size/color/UOM/price/currency/status khi đã có Buyer Order Item tham chiếu; `image_asset_id` nằm ngoài frozen set vì document snapshot không mang ảnh.
+- Upgrade V011/V012→V013 fail fast, không sửa business data, nếu `buyer_order_item` đang tham chiếu Finished Good `ARCHIVED`.
+- Phase 1 không ghi `image_asset_id`; media vẫn deferred và không có Data URL fallback.
 
 ## Schema `sales`
 

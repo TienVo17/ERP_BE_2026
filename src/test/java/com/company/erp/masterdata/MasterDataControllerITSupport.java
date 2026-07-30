@@ -176,6 +176,76 @@ public abstract class MasterDataControllerITSupport {
         return id;
     }
 
+    protected UUID insertRawMaterial(String code, UUID uomId, UUID supplierId) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+                        INSERT INTO master_data.raw_material (
+                            id, code, name, uom_id, currency_code, supplier_id, created_by, updated_by
+                        ) VALUES (:id, :code, 'Fixture raw material', :uomId, 'USD', :supplierId, :actorId, :actorId)
+                        """)
+                .param("id", id)
+                .param("code", code)
+                .param("uomId", uomId)
+                .param("supplierId", supplierId)
+                .param("actorId", SYSTEM_USER_ID)
+                .update();
+        return id;
+    }
+
+    protected UUID insertFinishedGood(String productKind, String styleNo, String name, UUID uomId) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+                        INSERT INTO master_data.finished_good (
+                            id, product_kind, style_no, name, uom_id, created_by, updated_by
+                        ) VALUES (:id, :productKind, :styleNo, :name, :uomId, :actorId, :actorId)
+                        """)
+                .param("id", id)
+                .param("productKind", productKind)
+                .param("styleNo", styleNo)
+                .param("name", name)
+                .param("uomId", uomId)
+                .param("actorId", SYSTEM_USER_ID)
+                .update();
+        return id;
+    }
+
+    protected void referenceFinishedGood(UUID finishedGoodId) {
+        UUID customerId = insertCustomer("FG-" + UUID.randomUUID());
+        UUID orderId = UUID.randomUUID();
+        jdbc.sql("""
+                        INSERT INTO sales.buyer_order (
+                            id, sys_po_no, order_type, customer_id, customer_name_snapshot,
+                            customer_short_name_snapshot, pic_source, pic_name_snapshot, buyer_po,
+                            po_date, delivery_date, created_by, updated_by
+                        ) VALUES (
+                            :id, :orderNo, 'STANDARD', :customerId, 'Fixture Customer', 'FGREF',
+                            'CUSTOM', 'Fixture PIC', 'BUYER-PO', CURRENT_DATE, CURRENT_DATE,
+                            :actorId, :actorId
+                        )
+                        """)
+                .param("id", orderId)
+                .param("orderNo", orderNumber("SO"))
+                .param("customerId", customerId)
+                .param("actorId", SYSTEM_USER_ID)
+                .update();
+        jdbc.sql("""
+                        INSERT INTO sales.buyer_order_item (
+                            id, buyer_order_id, line_no, is_custom, finished_good_id, product_kind_snapshot,
+                            style_no_snapshot, name_snapshot, uom_id, uom_code_snapshot, order_qty,
+                            production_qty, unit_price, currency_code, amount, created_by, updated_by
+                        ) VALUES (
+                            :id, :orderId, 1, false, :finishedGoodId, 'PRINT', 'STYLE', 'Fixture item',
+                            :uomId, 'EA', 1, 1, 0, 'USD', 0, :actorId, :actorId
+                        )
+                        """)
+                .param("id", UUID.randomUUID())
+                .param("orderId", orderId)
+                .param("finishedGoodId", finishedGoodId)
+                .param("uomId", SEEDED_UOM_ID)
+                .param("actorId", SYSTEM_USER_ID)
+                .update();
+    }
+
     protected UUID insertProcess(String name, String qrValue) {
         UUID id = UUID.randomUUID();
         jdbc.sql("""

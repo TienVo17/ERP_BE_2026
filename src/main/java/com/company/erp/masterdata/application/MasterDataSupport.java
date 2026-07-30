@@ -66,6 +66,25 @@ public final class MasterDataSupport {
         throw new ApiException(ApiErrorCode.VERSION_CONFLICT, "The resource changed after it was read.");
     }
 
+    /** A referenced master must exist and still be ACTIVE before a record may select it. */
+    public static void requireActive(java.util.Optional<String> status, String field) {
+        if (status.isEmpty()) {
+            throw new ApiException(ApiErrorCode.VALIDATION_FAILED, field + " does not reference an existing record.");
+        }
+        if (!"ACTIVE".equals(status.get())) {
+            throw new ApiException(ApiErrorCode.VALIDATION_FAILED, field + " references an archived record.");
+        }
+    }
+
+    public static void requireActiveCurrency(java.util.Optional<Boolean> active) {
+        if (active.isEmpty()) {
+            throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "currencyCode does not reference an existing currency.");
+        }
+        if (!active.get()) {
+            throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "currencyCode references an inactive currency.");
+        }
+    }
+
     public static void inUse(String resource) {
         throw new ApiException(ApiErrorCode.MASTER_IN_USE, resource + " is referenced by business data.");
     }
