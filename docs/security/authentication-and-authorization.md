@@ -24,7 +24,7 @@ CSRF state is cleared or rotated at login and logout, so the SPA calls `GET /aut
 
 A restricted challenge is authenticated but not authorized for business APIs, so calling anything other than change-password or logout returns `403 PASSWORD_CHANGE_REQUIRED`, never `401`. The SPA must not treat that code as a session expiry and must not attempt a refresh, because a challenge has no refresh cookie and a terminal logout would destroy the one-time challenge.
 
-A forced credential change verifies credentials but returns only a short-lived signed `purpose=password_change` challenge with an explicit `expiresAt`, the minimum identity needed to render the change screen, and no refresh cookie. The challenge is bound to the persisted reset/password generation, can invoke only change-password and logout, and becomes invalid after one successful change. A successful change writes the new hash, advances the generation, revokes old sessions, and creates a normal token pair.
+A forced credential change verifies credentials but returns only a short-lived signed `purpose=password_change` challenge with an explicit `expiresAt`, the minimum identity needed to render the change screen, and no refresh cookie. The challenge is bound to the persisted reset/password generation, can invoke only change-password and logout, and becomes invalid after one successful change. A successful change writes the new hash, advances the generation, revokes old sessions, records a redacted audit event, and creates a normal token pair.
 
 ## Credential and recovery controls
 
@@ -36,9 +36,13 @@ No account lockout is permitted. A single backend instance applies trusted-clien
 
 Trusted client IP resolution (`erp.security.trusted-proxy-addresses`, env `ERP_TRUSTED_PROXY_ADDRESSES`, default empty) governs how the rate limiter identifies the attacker address. When the immediate peer is not listed as a trusted proxy, only the socket peer address is used. When the immediate peer is trusted, `X-Forwarded-For` is parsed and walked right-to-left; trusted proxies are skipped, and the first non-trusted IP is used. The leftmost `X-Forwarded-For` element is attacker-controlled because proxies append to whatever the client sent. Only IP literals are accepted; hostnames are rejected and never resolved, preventing DNS-lookup DoS.
 
+Destructive admin changes that can affect recovery capability—user status, roles, permission overrides, password reset, and role permission grants—run in a transaction protected by a PostgreSQL transaction-scoped advisory lock. After applying the proposed state, the service counts recovery-capable accounts from current permissions and rejects a count below two with `RECOVERY_ADMIN_REQUIRED`; the transaction rolls back. A recovery-capable account is an ACTIVE `USER` or `STAFF` account with a non-empty credential, no required password change, and effective `ADMIN:MANAGE_USERS` plus `ADMIN:MANAGE_ROLES`. Disabling or archiving a user, replacing its roles or overrides, and resetting its password revoke its active sessions; changed role grants take effect through the next request's database authority load.
+
+Admin mutations write `audit.audit_event` rows with actor, action, target, optional request ID/reason, and redacted before/after summaries. Audit and login-event tables are append-only; application runtime privileges and database triggers prevent their update or deletion. Redaction recursively omits password, hash, token, cookie, and authorization keys.
+
 ## Authorization
 
-Each bearer request validates issuer, audience, signature, mandatory `kid` header, expiry, and subject/session identifiers. The server then loads the active user, the active auth session, and current effective permissions from PostgreSQL; long-lived JWT permission claims are not authoritative. This makes disable, logout, reset, role edits, and overrides effective at the next API boundary.
+Each bearer request validates issuer, audience, signature, mandatory `kid` header, expiry, and subject/session identifiers. A single set-based PostgreSQL authorization query then loads the active user, live auth session, and current effective permissions; long-lived JWT role or permission claims are ignored. The resulting current database authorities are evaluated by controller `@PreAuthorize` checks. This makes disable, logout, reset, role edits, and overrides effective at the next API boundary.
 
 Permission resolution is deterministic:
 
@@ -61,7 +65,7 @@ Each operation declares its requirement as `x-required-permission` in the OpenAP
 
 The migration-seeded `SYSTEM` principal is not an administrable account. It owns reference rows through audit foreign keys, cannot authenticate, and is excluded from user listing, profile and status commands, role and override assignment, password reset, and the recovery-admin count. Password reset is treated as destructive because it removes the target from the recovery-capable set until the forced change completes; it therefore requires `If-Match` and returns `RECOVERY_ADMIN_REQUIRED` when its post-state would leave fewer than two recovery-capable admins.
 
-IP allowlist management requires `ADMIN:MANAGE_ALLOWLIST`, but Phase 1 exposes configuration only: the list response always reports `enforced=false`, there is no global toggle, and no request is blocked. An entry's `active` flag records intent, not enforcement. Enforcement awaits a trusted-proxy design.
+IP allowlist management requires `ADMIN:MANAGE_ALLOWLIST`, but Phase 1 exposes configuration only: networks are canonicalized through PostgreSQL `inet` and uniquely stored, the list response always reports `enforced=false`, there is no global toggle, and no request is blocked. An entry's `active` flag records intent, not enforcement. Enforcement awaits a trusted-proxy design.
 
 ## Threat boundaries
 

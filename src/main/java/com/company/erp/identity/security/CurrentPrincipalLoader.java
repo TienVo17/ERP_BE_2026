@@ -32,13 +32,14 @@ public class CurrentPrincipalLoader implements Converter<Jwt, JwtAuthenticationT
     @Override
     public JwtAuthenticationToken convert(Jwt jwt) {
         UUID userId = uuid(jwt.getSubject());
-        var user = repository.findById(userId)
-                .filter(candidate -> candidate.isActive())
-                .orElseThrow(() -> new BadCredentialsException("Invalid bearer principal"));
         String purpose = jwt.getClaimAsString("purpose");
         List<SimpleGrantedAuthority> authorities;
         UUID sessionId = null;
+        com.company.erp.identity.domain.AppUser user;
         if ("password_change".equals(purpose)) {
+            user = repository.findById(userId)
+                    .filter(candidate -> candidate.isActive())
+                    .orElseThrow(() -> new BadCredentialsException("Invalid bearer principal"));
             Long generation = JwtTokenService.numericClaim(jwt, "password_generation");
             if (!user.mustChangePassword()
                     || generation == null
@@ -48,11 +49,11 @@ public class CurrentPrincipalLoader implements Converter<Jwt, JwtAuthenticationT
             authorities = List.of(new SimpleGrantedAuthority("PASSWORD_CHANGE_CHALLENGE"));
         } else if ("access".equals(purpose)) {
             sessionId = uuid(jwt.getClaimAsString("sid"));
-            repository.findActiveSession(sessionId, userId, clock.instant())
-                    .orElseThrow(() -> new BadCredentialsException("Inactive auth session"));
-            authorities = repository.effectivePermissions(userId).stream()
-                    .map(permission -> new SimpleGrantedAuthority(
-                            permission.module() + ":" + permission.action()))
+            var authorization = repository.findAccessAuthorization(userId, sessionId, clock.instant())
+                    .orElseThrow(() -> new BadCredentialsException("Invalid bearer principal or session"));
+            user = authorization.user();
+            authorities = authorization.authorities().stream()
+                    .map(SimpleGrantedAuthority::new)
                     .toList();
         } else {
             throw new BadCredentialsException("Unsupported token purpose");

@@ -8,6 +8,7 @@ import java.util.Map;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
@@ -93,6 +94,15 @@ public class ApiExceptionHandler {
                 ApiErrorCode.DUPLICATE_BUSINESS_KEY,
                 "A resource with the same business key already exists.",
                 request), ApiErrorCode.DUPLICATE_BUSINESS_KEY.status());
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    ResponseEntity<ProblemDetail> handleInvalidData(
+            DataIntegrityViolationException exception, HttpServletRequest request) {
+        return response(problemDetails.create(
+                ApiErrorCode.VALIDATION_FAILED,
+                "A supplied value is invalid for this resource.",
+                request), ApiErrorCode.VALIDATION_FAILED.status());
     }
 
     @ExceptionHandler(OptimisticLockingFailureException.class)

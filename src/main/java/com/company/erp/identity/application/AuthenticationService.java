@@ -35,6 +35,7 @@ public class AuthenticationService {
     private final PasswordService passwordService;
     private final RefreshTokenService refreshTokenService;
     private final JwtTokenService jwtTokenService;
+    private final com.company.erp.audit.AuditEventWriter auditWriter;
     private final TrustedIpRateLimiter rateLimiter;
     private final Clock clock;
     private final String dummyPasswordHash;
@@ -45,8 +46,16 @@ public class AuthenticationService {
             PasswordService passwordService,
             RefreshTokenService refreshTokenService,
             JwtTokenService jwtTokenService,
-            TrustedIpRateLimiter rateLimiter) {
-        this(repository, passwordService, refreshTokenService, jwtTokenService, rateLimiter, Clock.systemUTC());
+            TrustedIpRateLimiter rateLimiter,
+            com.company.erp.audit.AuditEventWriter auditWriter) {
+        this(
+                repository,
+                passwordService,
+                refreshTokenService,
+                jwtTokenService,
+                rateLimiter,
+                auditWriter,
+                Clock.systemUTC());
     }
 
     AuthenticationService(
@@ -55,12 +64,14 @@ public class AuthenticationService {
             RefreshTokenService refreshTokenService,
             JwtTokenService jwtTokenService,
             TrustedIpRateLimiter rateLimiter,
+            com.company.erp.audit.AuditEventWriter auditWriter,
             Clock clock) {
         this.repository = repository;
         this.passwordService = passwordService;
         this.refreshTokenService = refreshTokenService;
         this.jwtTokenService = jwtTokenService;
         this.rateLimiter = rateLimiter;
+        this.auditWriter = auditWriter;
         this.clock = clock;
         this.dummyPasswordHash = passwordService.encode(UUID.randomUUID().toString());
     }
@@ -219,6 +230,15 @@ public class AuthenticationService {
             return new ChangePasswordFailure(ApiErrorCode.UNAUTHENTICATED, "The password challenge is no longer valid.");
         }
         repository.revokeAllSessions(current.id(), now, "PASSWORD_CHANGED");
+        auditWriter.write(
+                current.id(),
+                "PASSWORD_CHANGED",
+                "APP_USER",
+                current.id(),
+                null,
+                null,
+                java.util.Map.of("passwordGeneration", current.passwordGeneration()),
+                java.util.Map.of("passwordGeneration", current.passwordGeneration() + 1));
         AppUser updatedUser = repository.findById(current.id()).orElseThrow();
         var refresh = refreshTokenService.createSession(updatedUser, clientIp, userAgent);
         var access = jwtTokenService.issueSessionAccessToken(updatedUser, refresh.session().id());

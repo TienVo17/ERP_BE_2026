@@ -141,6 +141,61 @@ public class IdentityJdbcRepository {
                 .list();
     }
 
+    /** Loads the active user, live session and current effective authorities in one query. */
+    public Optional<AccessAuthorization> findAccessAuthorization(
+            UUID userId,
+            UUID sessionId,
+            Instant instant) {
+        return jdbc.sql("""
+                        WITH role_grants AS (
+                            SELECT DISTINCT rp.permission_id
+                            FROM identity.user_role ur
+                            JOIN identity.app_role r ON r.id = ur.role_id AND r.active = true
+                            JOIN identity.role_permission rp ON rp.role_id = ur.role_id
+                            WHERE ur.user_id = :userId
+                        )
+                        SELECT u.id, u.kind, u.login_id, u.password_hash, u.name, u.status,
+                               u.must_change_password, u.password_generation,
+                               COALESCE(
+                                   array_agg(DISTINCT p.module_code || ':' || p.action_code)
+                                       FILTER (WHERE p.id IS NOT NULL AND CASE
+                                           WHEN uo.effect = 'DENY' THEN false
+                                           WHEN uo.effect = 'ALLOW' THEN true
+                                           ELSE rg.permission_id IS NOT NULL
+                                       END),
+                                   ARRAY[]::text[]
+                               ) AS authorities
+                        FROM identity.app_user u
+                        JOIN identity.auth_session s
+                          ON s.id = :sessionId
+                         AND s.user_id = u.id
+                         AND s.revoked_at IS NULL
+                         AND s.idle_expires_at > :now
+                         AND s.absolute_expires_at > :now
+                        LEFT JOIN identity.permission p ON p.active = true
+                        LEFT JOIN role_grants rg ON rg.permission_id = p.id
+                        LEFT JOIN identity.user_permission_override uo
+                          ON uo.user_id = u.id AND uo.permission_id = p.id
+                        WHERE u.id = :userId
+                          AND u.kind IN ('USER', 'STAFF')
+                          AND u.status = 'ACTIVE'
+                        GROUP BY u.id, u.kind, u.login_id, u.password_hash, u.name, u.status,
+                                 u.must_change_password, u.password_generation
+                        """)
+                .param("userId", userId)
+                .param("sessionId", sessionId)
+                .param("now", OffsetDateTime.ofInstant(instant, ZoneOffset.UTC))
+                .query((resultSet, rowNum) -> {
+                    Object[] raw = (Object[]) resultSet.getArray("authorities").getArray();
+                    List<String> authorities = java.util.Arrays.stream(raw)
+                            .map(Object::toString)
+                            .sorted()
+                            .toList();
+                    return new AccessAuthorization(mapUser(resultSet), authorities);
+                })
+                .optional();
+    }
+
     public Optional<AuthSession> findActiveSession(UUID sessionId, UUID userId, Instant instant) {
         return jdbc.sql("""
                         SELECT id, user_id, created_at, last_refreshed_at, idle_expires_at,
@@ -345,6 +400,9 @@ public class IdentityJdbcRepository {
                 .param("clientIp", clientIp)
                 .param("userAgent", truncate(userAgent, 500))
                 .update();
+    }
+
+    public record AccessAuthorization(AppUser user, List<String> authorities) {
     }
 
     private static AppUser mapUser(java.sql.ResultSet resultSet) throws java.sql.SQLException {

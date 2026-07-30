@@ -88,6 +88,8 @@ Mutable master responses include `id`, integer `version`, `status` (`ACTIVE` or 
 
 Immutable business keys are absent from their update schemas: customer `shortName`, process `qrValue`, user `loginId`, and role `code`. Create and update therefore use separate schemas wherever persistence differs.
 
+IP allowlist `network` values are parsed and returned in canonical PostgreSQL `inet` form and are unique. Allowlist list responses always set `enforced` to `false`; there is no global enforcement toggle and entries do not block requests in Phase 1. `active` records configuration intent only.
+
 ## Security-sensitive data
 
 Responses and examples never contain a password, password hash, temporary password, raw refresh token, cookie contents, avatar/picture/image field, Data URL, or image name.
