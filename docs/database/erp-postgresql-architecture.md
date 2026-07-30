@@ -204,6 +204,10 @@ Posted/Reversed data không hard-delete.
 - Core Delivery Item ↔ Stock Movement dùng composite/deferred integrity để bảo đảm cùng position, đúng movement type và source line; polymorphic source IDs chỉ bổ sung audit/navigation.
 - Production Group scope và Buyer Order PIC ownership dùng composite FK; config subtype/group member count dùng deferred validation khi simple FK/check không đủ.
 - Nâng `SERIALIZABLE` chỉ khi concurrency tests chứng minh row locking không đủ.
+- V012 dùng một global transaction advisory lock cho mọi Customer/Process/Rate lifecycle UPDATE và relationship INSERT/UPDATE. `BEFORE STATEMENT` coordination chạy trước master/FK row lock; lock reentrant trong cùng transaction. Trade-off chủ ý: tất cả guarded writes bị serialize để loại bỏ multi-key/multi-statement cycle; ordinary reads không bị chặn.
+- PostgreSQL two-transaction tests đặt `deadlock_timeout=100ms`, `lock_timeout=3s`: bulk relationship C2,C1 đối đầu lifecycle C1,C2; hai relationship→lifecycle transactions; Rate→Delivery đối đầu Delivery→Rate; và mixed Customer/Process đều hoàn tất theo thứ tự xác định, không `40P01`/lock timeout.
+- Upgrade V011→V012 lấy complete guarded-table `SHARE ROW EXCLUSIVE NOWAIT` fence trước validation. Nếu có pre-V012 writer, migration fail fast `55P03`, rollback và operator phải quiesce guarded writes rồi rerun. Khi fence thành công, migration validate và fail với `MASTER_GUARD_MIGRATION_INVALID` nếu relationship nhắm Customer/Process `ARCHIVED`, hoặc posted/reversed Delivery nhắm Exchange Rate `ARCHIVED`; migration không tự sửa business data.
+- V012 phối hợp master lifecycle với transaction-reference writers bằng trigger PostgreSQL. Một global transaction advisory lock được lấy trước immediate FK; sau đó FK giữ khóa tham chiếu theo cơ chế PostgreSQL và `AFTER STATEMENT` trigger chỉ đọc trạng thái master. Vì mọi guarded write đã được serialize, direct SQL không thể đồng thời tạo relationship usage và update/archive master; Customer, Process và Exchange Rate không dùng khóa thô toàn bảng sau khi V012 được cài đặt.
 
 ## Referential và delete policy
 
@@ -264,7 +268,7 @@ Index theo query thực, không index mọi cột:
 - unique login/customer short name/RM code/UOM/rate month/F/G composite/document number;
 - Buyer Order `(status, po_date)`, `customer_id`;
 - Production `(status, delivery_date)`, group và BO item;
-- Delivery `(status, delivery_date)`, customer, document number;
+- Delivery `(status, delivery_date)`, customer, document number; V012 thêm partial index `(exchange_rate_id) WHERE status IN ('POSTED','REVERSED')` cho exchange-rate usage guard;
 - Stock Position partial/query index cho `current_qty > 0` và `= 0` nếu query plan chứng minh;
 - Stock Movement `(stock_position_id, occurred_at, id)`;
 - Login/Audit `(actor_user_id, occurred_at desc)` và entity/time.
@@ -283,9 +287,9 @@ Active Debit row được derive từ `POSTED Delivery Note JOIN Delivery Note I
 
 ## Vận hành và migration
 
-Khi user duyệt logical schema:
+Schema hiện được quản lý bằng Flyway tại `src/main/resources/db/migration/`:
 
-- dùng Flyway tại `src/main/resources/db/migration/` nếu backend Spring Boot;
+- migration đã áp dụng là nguồn DDL triển khai; data dictionary giữ vai trò logical reference;
 - migration immutable sau khi đã chạy môi trường chia sẻ;
 - thay đổi dùng forward migration;
 - reference seed tách demo data;
@@ -317,6 +321,6 @@ Khi user duyệt logical schema:
 
 The D1-D12/current architecture decisions above remain preserved historical database design. Phase 1 froze the application contract before implementation. V011 now adds `app_user.must_change_password` and `password_generation`, the `identity.auth_session` and `identity.refresh_token` persistence required for rotating hash-only refresh tokens, the approved SALE master-data grants, and explicit least-privilege grants on its new objects. V001-V010 remain byte-identical.
 
-The backend test profile uses PostgreSQL 16 Testcontainers with Flyway. `mvn test` includes the `*IT` classes and verifies both empty-database V001→V011 migration and V010→V011 upgrade, a separate runtime database role, append-only audit/login protection, and the absence of H2. Production deployment creates the migration owner and runtime LOGIN role externally, configures `erp.runtime_role` before running Flyway as a separate deployment job, and starts the application with `ERP_FLYWAY_ENABLED=false` (the default) plus only `ERP_DB_URL`, `ERP_DB_RUNTIME_USERNAME`, and `ERP_DB_RUNTIME_PASSWORD`. A dedicated integration test proves application startup with the runtime credential cannot mutate Flyway history; application source contains no database credential values.
+The backend test profile uses PostgreSQL 16 Testcontainers with Flyway. `mvn test` includes the `*IT` classes and verifies both empty-database V001→V012 migration and V011→V012 upgrade, a separate runtime database role, append-only audit/login protection, and the absence of H2. V001–V011 remain byte-identical; V012 adds database-enforced Customer/Process/Exchange Rate reference coordination and the partial Delivery exchange-rate usage index. Production deployment creates the migration owner and runtime LOGIN role externally, configures `erp.runtime_role` before running Flyway as a separate deployment job, and starts the application with `ERP_FLYWAY_ENABLED=false` (the default) plus only `ERP_DB_URL`, `ERP_DB_RUNTIME_USERNAME`, and `ERP_DB_RUNTIME_PASSWORD`. A dedicated integration test proves application startup with the runtime credential cannot mutate Flyway history; application source contains no database credential values.
 
 The authoritative session, CSRF, key-ring, recovery-admin, permission-precedence, and allowlist-configuration semantics remain in the linked Operational Core v1 and security documents; this architecture document does not duplicate those application contracts.

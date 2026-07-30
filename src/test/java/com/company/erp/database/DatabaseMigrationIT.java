@@ -33,12 +33,12 @@ class DatabaseMigrationIT {
     private DataSource dataSource;
 
     @Test
-    void appliesV001ThroughV011WithAuthSessionSchema() {
+    void appliesV001ThroughV012WithMasterUsageCoordination() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
 
         assertThat(Flyway.configure().dataSource(dataSource).load().info().applied())
                 .extracting(info -> info.getVersion().toString())
-                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011");
+                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012");
 
         assertThat(columns(jdbc, "identity", "app_user"))
                 .contains("must_change_password", "password_generation");
@@ -55,6 +55,15 @@ class DatabaseMigrationIT {
                 .contains("ix_auth_session_user_expiry", "ix_auth_session_active_expiry");
         assertThat(indexNames(jdbc, "identity", "refresh_token"))
                 .contains("uq_refresh_token_hash", "ix_refresh_token_session_status_expiry");
+        assertThat(indexNames(jdbc, "delivery", "delivery_note"))
+                .contains("ix_delivery_note_used_exchange_rate");
+        assertThat(jdbc.sql("""
+                        SELECT pg_get_expr(i.indpred, i.indrelid)
+                        FROM pg_index i
+                        JOIN pg_class c ON c.oid = i.indexrelid
+                        WHERE c.relname = 'ix_delivery_note_used_exchange_rate'
+                        """).query(String.class).single())
+                .contains("status", "POSTED", "REVERSED");
     }
 
     @Test
@@ -178,15 +187,30 @@ class DatabaseMigrationIT {
 
     @Test
     void everyForwardObjectMigrationDeclaresRuntimePrivilegeHandling() throws Exception {
-        String migration = new String(
-                java.util.Objects.requireNonNull(DatabaseMigrationIT.class.getClassLoader().getResourceAsStream(
-                        "db/migration/V011__add_identity_sessions_and_sale_master_grants.sql")).readAllBytes(),
-                java.nio.charset.StandardCharsets.UTF_8);
+        String v011 = migration("V011__add_identity_sessions_and_sale_master_grants.sql");
+        String v012 = migration("V012__index_exchange_rate_usage.sql");
 
-        assertThat(migration)
+        assertThat(v011)
                 .contains("current_setting('erp.runtime_role', true)")
                 .contains("REVOKE ALL ON identity.auth_session, identity.refresh_token FROM PUBLIC")
                 .contains("GRANT SELECT, INSERT, UPDATE ON identity.auth_session, identity.refresh_token");
+        assertThat(v012)
+                .contains("CREATE INDEX ix_delivery_note_used_exchange_rate")
+                .contains("MASTER_GUARD_MIGRATION_INVALID:")
+                .contains("IN SHARE ROW EXCLUSIVE MODE NOWAIT")
+                .contains("IN SHARE ROW EXCLUSIVE MODE NOWAIT")
+                .contains("pg_catalog.pg_advisory_xact_lock(20260730, 1)")
+                .doesNotContain("pg_catalog.pg_advisory_xact_lock(20260730, 2)")
+                .doesNotContain("pg_catalog.pg_advisory_xact_lock(20260730, 3)")
+                .contains("SET search_path = pg_catalog")
+                .contains("REVOKE ALL ON FUNCTION master_data.require_active_customer_references() FROM PUBLIC")
+                .contains("REVOKE ALL ON FUNCTION master_data.coordinate_guarded_master_usage() FROM PUBLIC")
+                .doesNotContain("GRANT SELECT, INSERT, UPDATE ON ALL TABLES");
+    }
+
+    private static String migration(String name) throws Exception {
+        return new String(java.util.Objects.requireNonNull(DatabaseMigrationIT.class.getClassLoader()
+                .getResourceAsStream("db/migration/" + name)).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
     }
 
     @Test

@@ -2,7 +2,7 @@
 
 ## Tổng quan
 
-Đây là logical schema đã áp dụng các quyết định được xác nhận. Tài liệu chốt table/column/type/constraint/index intent để review trước DDL. Chưa có migration SQL.
+Đây là logical reference đã áp dụng các quyết định được xác nhận. DDL triển khai được quản lý bằng Flyway qua V001-V012; tài liệu này mô tả table/column/type/constraint/index intent và phải được cập nhật cùng forward migrations.
 
 ## Convention chung
 
@@ -277,6 +277,8 @@ Object storage metadata; không lưu binary/Data URL.
 
 - Check day of month = 1.
 - Không update/archive nếu posted Delivery tham chiếu; correction tạo version/replacement policy ở application.
+- V012 serialize lifecycle checks và Delivery reference writes bằng một global transaction advisory lock chung cho mọi guarded master/relationship write, lấy trong `BEFORE STATEMENT` trước master/FK row lock. Sau immediate FK, trigger chỉ đọc và yêu cầu rate `ACTIVE`. Usage lookup giữ partial index `delivery.delivery_note(exchange_rate_id) WHERE status IN ('POSTED','REVERSED')`.
+- Upgrade V011→V012 fail fast, không sửa business data, nếu posted/reversed Delivery đang tham chiếu Exchange Rate `ARCHIVED`.
 
 ### `customer`
 
@@ -295,6 +297,7 @@ Một Customer Master duy nhất.
 
 - Unique functional index `upper(trim(short_name))`.
 - Index: `(status)`, canonical name search as required.
+- V012 Customer master UPDATE và mọi Buyer Order/Stock Position/Delivery INSERT/UPDATE cùng lấy global transaction advisory lock trong `BEFORE STATEMENT`, trước master/FK row lock. Row trigger kiểm usage sau coordination. Upgrade fail fast nếu business data V011 tham chiếu Customer `ARCHIVED`.
 
 ### `customer_contact`
 
@@ -341,6 +344,7 @@ Constraints/index giống Customer Contact. Không có `used_in_purchase_order` 
 | common audit/version | — | No | audit |
 
 - Process name có thể đổi khi business cho phép; QR không đổi.
+- V012 Process master UPDATE và `production_order_process` INSERT/UPDATE cùng lấy global transaction advisory lock trong `BEFORE STATEMENT`, trước master/FK row lock; sau đó trigger yêu cầu Process `ACTIVE`. Upgrade fail fast nếu business data V011 tham chiếu Process `ARCHIVED`.
 
 ### `raw_material`
 
@@ -719,4 +723,4 @@ Chỉ thêm index khi query path chứng minh cần; không partition phase đ�
 
 ## Unresolved questions
 
-Không còn business-decision blocker cho logical schema. Cần user duyệt logical schema này trước khi tạo DDL/Flyway migrations.
+Không còn business-decision blocker cho logical schema hiện hành. Mọi thay đổi tiếp theo phải cập nhật logical reference trước hoặc cùng lúc với forward Flyway migration và qua review trước khi apply.

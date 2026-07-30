@@ -127,6 +127,50 @@ class RuntimePrivilegeIT {
     }
 
     @Test
+    void runtimeRelationshipWritesEnforceV012WithoutHelperExecutePrivilege() throws Exception {
+        UUID actorId = createUser("runtime-master-guard");
+        UUID customerId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection();
+                var statement = connection.prepareStatement("""
+                        INSERT INTO master_data.customer (
+                            id, short_name, name, currency_code, status, created_by, updated_by
+                        ) VALUES (?, ?, 'Archived Customer', 'USD', 'ARCHIVED', ?, ?)
+                        """)) {
+            statement.setObject(1, customerId);
+            statement.setString(2, "ARCHIVED-" + customerId);
+            statement.setObject(3, actorId);
+            statement.setObject(4, actorId);
+            statement.executeUpdate();
+        }
+
+        assertThatThrownBy(() -> asRuntime(connection -> {
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO sales.buyer_order (
+                        id, sys_po_no, order_type, customer_id, customer_name_snapshot,
+                        customer_short_name_snapshot, pic_source, pic_name_snapshot, buyer_po,
+                        po_date, delivery_date, created_by, updated_by
+                    ) VALUES (?, ?, 'STANDARD', ?, 'Archived Customer', 'ARCHIVED',
+                        'CUSTOM', 'PIC', 'PO', CURRENT_DATE, CURRENT_DATE, ?, ?)
+                    """)) {
+                statement.setObject(1, UUID.randomUUID());
+                statement.setString(2, "SO-2026-%06d".formatted(Math.floorMod(UUID.randomUUID().hashCode(), 1_000_000)));
+                statement.setObject(3, customerId);
+                statement.setObject(4, actorId);
+                statement.setObject(5, actorId);
+                statement.executeUpdate();
+            }
+        })).isInstanceOf(SQLException.class)
+                .satisfies(error -> assertThat(((SQLException) error).getSQLState()).isEqualTo("23514"));
+
+        assertThatThrownBy(() -> asRuntime(connection -> {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("SELECT master_data.require_active_customer_references()");
+            }
+        })).isInstanceOf(SQLException.class)
+                .satisfies(error -> assertThat(((SQLException) error).getSQLState()).isEqualTo("42501"));
+    }
+
+    @Test
     void runtimeRoleDoesNotOwnMigrationHistory() {
         assertThatThrownBy(() -> asRuntime(connection -> {
             try (Statement statement = connection.createStatement()) {
