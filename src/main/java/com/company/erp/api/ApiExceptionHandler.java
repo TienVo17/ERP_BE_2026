@@ -7,6 +7,8 @@ import java.util.Locale;
 import java.util.Map;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
@@ -67,6 +69,35 @@ public class ApiExceptionHandler {
                 .toList();
         problem.setProperty("fieldErrors", fieldErrors);
         return response(problem, ApiErrorCode.VALIDATION_FAILED.status());
+    }
+
+    /**
+     * Controllers carry {@code @Validated}, so parameter constraints are enforced by the method
+     * validation proxy and surface as this exception instead of the Spring MVC one above. Without
+     * this handler an out-of-range page size answers 500 rather than naming the offending parameter.
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    ResponseEntity<ProblemDetail> handleParameterConstraints(
+            ConstraintViolationException exception, HttpServletRequest request) {
+        ProblemDetail problem = problemDetails.create(
+                ApiErrorCode.VALIDATION_FAILED,
+                "One or more request parameters are invalid.",
+                request);
+        List<Map<String, String>> fieldErrors = exception.getConstraintViolations().stream()
+                .map(violation -> Map.of(
+                        "field", parameterName(violation),
+                        "message", violation.getMessage()))
+                .sorted(Comparator.comparing(error -> error.get("field")))
+                .toList();
+        problem.setProperty("fieldErrors", fieldErrors);
+        return response(problem, ApiErrorCode.VALIDATION_FAILED.status());
+    }
+
+    /** Reports the parameter alone; the leading method name carries no meaning for a client. */
+    private static String parameterName(ConstraintViolation<?> violation) {
+        String path = violation.getPropertyPath().toString();
+        int lastSeparator = path.lastIndexOf('.');
+        return lastSeparator < 0 ? path : path.substring(lastSeparator + 1);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

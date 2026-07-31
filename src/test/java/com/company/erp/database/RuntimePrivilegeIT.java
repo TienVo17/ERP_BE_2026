@@ -255,6 +255,37 @@ class RuntimePrivilegeIT {
                         .isEqualTo("42501"));
     }
 
+    /**
+     * The four statements below are every DELETE the application issues. Administration commands
+     * replace authority by clearing the old rows first, so without these grants role assignment,
+     * override replacement and allowlist removal fail at the database with permission denied.
+     */
+    @Test
+    void runtimeRoleCanRunEveryDeleteTheApplicationIssues() throws Exception {
+        UUID absent = UUID.randomUUID();
+        asRuntime(connection -> {
+            for (String sql : java.util.List.of(
+                    "DELETE FROM identity.user_role WHERE user_id = '" + absent + "'",
+                    "DELETE FROM identity.user_permission_override WHERE user_id = '" + absent + "'",
+                    "DELETE FROM identity.role_permission WHERE role_id = '" + absent + "'",
+                    "DELETE FROM identity.ip_allowlist_entry WHERE id = '" + absent + "' AND version = 0")) {
+                try (Statement statement = connection.createStatement()) {
+                    // A predicate that matches nothing still needs the privilege, so this asserts
+                    // the grant without touching a single row.
+                    assertThat(statement.executeUpdate(sql)).isZero();
+                }
+            }
+        });
+    }
+
+    @Test
+    void runtimeRoleStillCannotDeleteIdentitiesOrTheirHistory() {
+        assertMutationDenied("DELETE FROM identity.app_user WHERE login_id = 'never'");
+        assertMutationDenied("DELETE FROM identity.app_role WHERE code = 'never'");
+        assertMutationDenied("DELETE FROM identity.auth_session WHERE user_agent = 'never'");
+        assertMutationDenied("DELETE FROM identity.login_event WHERE outcome = 'never'");
+    }
+
     private UUID createUser(String loginId) throws SQLException {
         UUID id = UUID.randomUUID();
         try (Connection connection = dataSource.getConnection();

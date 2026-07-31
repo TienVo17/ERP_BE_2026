@@ -19,7 +19,7 @@ class DatabaseUpgradeIT {
     private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     @Test
-    void upgradesCleanV011DatabaseToV013WithoutLosingExistingRows() throws Exception {
+    void upgradesCleanV011DatabaseToV014WithoutLosingExistingRows() throws Exception {
         try (PostgreSQLContainer postgres = postgres("erp_upgrade_test")) {
             postgres.start();
             migrateToV011(postgres);
@@ -54,7 +54,7 @@ class DatabaseUpgradeIT {
                 }
             }
             assertThat(count(postgres, "sales.buyer_order", buyerOrderId)).isOne();
-            assertThat(currentVersion(postgres)).isEqualTo("013");
+            assertThat(currentVersion(postgres)).isEqualTo("014");
         }
     }
 
@@ -81,7 +81,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("013");
+            assertThat(currentVersion(postgres)).isEqualTo("014");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -193,7 +193,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("013");
+            assertThat(currentVersion(postgres)).isEqualTo("014");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
