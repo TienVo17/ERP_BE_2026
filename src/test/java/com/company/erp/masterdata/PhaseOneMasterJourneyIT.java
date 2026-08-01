@@ -59,12 +59,21 @@ class PhaseOneMasterJourneyIT extends MasterDataControllerITSupport {
                 .query(String.class)
                 .list();
 
-        List<String> expected = SALE_MODULES.stream()
+        List<String> expectedMasters = SALE_MODULES.stream()
                 .flatMap(module -> java.util.stream.Stream.of(
                         module + ":CREATE", module + ":UPDATE", module + ":VIEW"))
-                .sorted()
                 .toList();
-        org.assertj.core.api.Assertions.assertThat(granted).containsExactlyElementsOf(expected);
+        List<String> expectedTransactions = List.of(
+                "BUYER_ORDER:VIEW", "BUYER_ORDER:CREATE", "BUYER_ORDER:UPDATE",
+                "BUYER_ORDER:CONFIRM", "BUYER_ORDER:REOPEN",
+                "PRODUCTION:VIEW", "PRODUCTION:GROUP", "PRODUCTION:CONFIGURE", "PRODUCTION:FINISH",
+                "DELIVERY:VIEW", "DELIVERY:CREATE", "DELIVERY:POST", "DELIVERY:REVERSE",
+                "DELIVERY:PRINT", "DELIVERY:EXPORT",
+                "STOCK:VIEW", "STOCK:RETURN", "STOCK:DISPOSE");
+        org.assertj.core.api.Assertions.assertThat(granted)
+                .containsExactlyInAnyOrderElementsOf(java.util.stream.Stream
+                        .concat(expectedMasters.stream(), expectedTransactions.stream())
+                        .toList());
     }
 
     @Test

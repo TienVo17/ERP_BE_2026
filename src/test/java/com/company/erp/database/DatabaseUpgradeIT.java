@@ -3,6 +3,7 @@ package com.company.erp.database;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -19,7 +20,7 @@ class DatabaseUpgradeIT {
     private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     @Test
-    void upgradesCleanV011DatabaseToV014WithoutLosingExistingRows() throws Exception {
+    void upgradesCleanV011DatabaseToV015WithoutLosingExistingRows() throws Exception {
         try (PostgreSQLContainer postgres = postgres("erp_upgrade_test")) {
             postgres.start();
             migrateToV011(postgres);
@@ -54,7 +55,51 @@ class DatabaseUpgradeIT {
                 }
             }
             assertThat(count(postgres, "sales.buyer_order", buyerOrderId)).isOne();
-            assertThat(currentVersion(postgres)).isEqualTo("014");
+            assertThat(currentVersion(postgres)).isEqualTo("015");
+        }
+    }
+
+    /**
+     * A V014 idempotency row carries no stored response, so V015 cannot honour a replay for it. The
+     * migration must say so rather than invent one: a finished command is quarantined until its own
+     * retention runs out, and anything unfinished simply becomes retryable straight away.
+     */
+    @Test
+    void quarantinesFinishedLegacyIdempotencyRowsAndReleasesTheRest() throws Exception {
+        try (PostgreSQLContainer postgres = postgres("erp_upgrade_idempotency")) {
+            postgres.start();
+            migrateToV011(postgres);
+
+            UUID completedId = insertLegacyIdempotencyRecord(postgres, "COMPLETED", "legacy-completed");
+            UUID inProgressId = insertLegacyIdempotencyRecord(postgres, "IN_PROGRESS", "legacy-active");
+            UUID failedId = insertLegacyIdempotencyRecord(postgres, "FAILED", "legacy-failed");
+            OffsetDateTime completedExpiry = expiresAt(postgres, completedId);
+
+            migrateToLatest(postgres);
+
+            assertThat(legacyStatus(postgres, completedId)).isEqualTo("QUARANTINED");
+            assertThat(legacyStatus(postgres, inProgressId)).isEqualTo("RETRYABLE");
+            assertThat(legacyStatus(postgres, failedId)).isEqualTo("RETRYABLE");
+
+            // The quarantined row keeps its own retention window; the released ones expire now.
+            assertThat(expiresAt(postgres, completedId)).isEqualTo(completedExpiry);
+            assertThat(expiresAt(postgres, inProgressId)).isBefore(OffsetDateTime.now().plusMinutes(1));
+
+            // No response was fabricated for any of them.
+            try (Connection connection = connection(postgres);
+                    var statement = connection.createStatement();
+                    var result = statement.executeQuery("""
+                            SELECT count(*)
+                            FROM system.idempotency_record
+                            WHERE response_body IS NOT NULL
+                               OR response_status IS NOT NULL
+                               OR completed_at IS NOT NULL
+                               OR lease_owner IS NOT NULL
+                            """)) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isZero();
+            }
+            assertThat(currentVersion(postgres)).isEqualTo("015");
         }
     }
 
@@ -81,7 +126,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("014");
+            assertThat(currentVersion(postgres)).isEqualTo("015");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -193,7 +238,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("014");
+            assertThat(currentVersion(postgres)).isEqualTo("015");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -238,6 +283,47 @@ class DatabaseUpgradeIT {
                 .rootCause()
                 .hasMessageContaining("MASTER_GUARD_MIGRATION_INVALID:")
                 .hasMessageContaining(marker);
+    }
+
+    private static UUID insertLegacyIdempotencyRecord(
+            PostgreSQLContainer postgres, String status, String key) throws SQLException {
+        UUID id = UUID.randomUUID();
+        try (Connection connection = connection(postgres);
+                var statement = connection.prepareStatement("""
+                        INSERT INTO system.idempotency_record (
+                            id, scope, idempotency_key, request_hash, status, expires_at
+                        ) VALUES (?, 'legacy-scope', ?, 'legacy-hash', ?, clock_timestamp() + interval '6 hours')
+                        """)) {
+            statement.setObject(1, id);
+            statement.setString(2, key + '-' + id);
+            statement.setString(3, status);
+            statement.executeUpdate();
+        }
+        return id;
+    }
+
+    private static String legacyStatus(PostgreSQLContainer postgres, UUID id) throws SQLException {
+        try (Connection connection = connection(postgres);
+                var statement = connection.prepareStatement(
+                        "SELECT status FROM system.idempotency_record WHERE id = ?")) {
+            statement.setObject(1, id);
+            try (var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                return result.getString(1);
+            }
+        }
+    }
+
+    private static OffsetDateTime expiresAt(PostgreSQLContainer postgres, UUID id) throws SQLException {
+        try (Connection connection = connection(postgres);
+                var statement = connection.prepareStatement(
+                        "SELECT expires_at FROM system.idempotency_record WHERE id = ?")) {
+            statement.setObject(1, id);
+            try (var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                return result.getObject(1, OffsetDateTime.class);
+            }
+        }
     }
 
     private static UUID insertCustomer(PostgreSQLContainer postgres, String key) throws SQLException {

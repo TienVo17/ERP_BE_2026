@@ -33,12 +33,12 @@ class DatabaseMigrationIT {
     private DataSource dataSource;
 
     @Test
-    void appliesV001ThroughV014WithMasterUsageCoordination() {
+    void appliesV001ThroughV015WithTransactionCommandFoundation() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
 
         assertThat(Flyway.configure().dataSource(dataSource).load().info().applied())
                 .extracting(info -> info.getVersion().toString())
-                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014");
+                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015");
 
         assertThat(columns(jdbc, "identity", "app_user"))
                 .contains("must_change_password", "password_generation");
@@ -130,7 +130,7 @@ class DatabaseMigrationIT {
     }
 
     @Test
-    void grantsOnlyTheFrozenSaleMasterBaseline() {
+    void grantsTheApprovedSaleMasterAndTransactionBaseline() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
 
         Set<String> salePermissions = jdbc.sql("""
@@ -150,12 +150,33 @@ class DatabaseMigrationIT {
                 "CUSTOMER:VIEW", "CUSTOMER:CREATE", "CUSTOMER:UPDATE",
                 "SUPPLIER:VIEW", "SUPPLIER:CREATE", "SUPPLIER:UPDATE",
                 "PROCESS:VIEW", "PROCESS:CREATE", "PROCESS:UPDATE",
-                "ETC:VIEW", "ETC:CREATE", "ETC:UPDATE");
+                "ETC:VIEW", "ETC:CREATE", "ETC:UPDATE",
+                "BUYER_ORDER:VIEW", "BUYER_ORDER:CREATE", "BUYER_ORDER:UPDATE",
+                "BUYER_ORDER:CONFIRM", "BUYER_ORDER:REOPEN",
+                "PRODUCTION:VIEW", "PRODUCTION:GROUP", "PRODUCTION:CONFIGURE", "PRODUCTION:FINISH",
+                "DELIVERY:VIEW", "DELIVERY:CREATE", "DELIVERY:POST", "DELIVERY:REVERSE",
+                "DELIVERY:PRINT", "DELIVERY:EXPORT",
+                "STOCK:VIEW", "STOCK:RETURN", "STOCK:DISPOSE");
         assertThat(salePermissions).noneMatch(permission -> permission.endsWith(":ARCHIVE"));
         assertThat(salePermissions).noneMatch(permission -> permission.startsWith("ADMIN:"));
-        assertThat(salePermissions).noneMatch(permission -> Set.of(
-                "BUYER_ORDER", "PRODUCTION", "DELIVERY", "STOCK")
-                .contains(permission.substring(0, permission.indexOf(':'))));
+    }
+
+    @Test
+    void createsTheFencedTransactionFoundationAndHistoryFields() {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+
+        assertThat(columns(jdbc, "system", "idempotency_record")).contains(
+                "scope_digest", "actor_user_id", "request_method", "normalized_path", "command_id",
+                "response_status", "response_content_type", "response_body", "completed_at",
+                "lease_owner", "lease_generation", "lease_expires_at");
+        assertThat(columns(jdbc, "sales", "buyer_order")).contains("active_revision");
+        assertThat(columns(jdbc, "sales", "buyer_order_item")).contains("revision", "active_revision", "status");
+        assertThat(columns(jdbc, "production", "production_order")).contains("status");
+
+        assertThat(jdbc.sql("SELECT count(*) FROM identity.role_permission rp JOIN identity.permission p ON p.id = rp.permission_id WHERE rp.role_id = :roleId AND p.module_code IN ('BUYER_ORDER', 'PRODUCTION', 'DELIVERY', 'STOCK')")
+                .param("roleId", SALE_ROLE_ID)
+                .query(Integer.class)
+                .single()).isEqualTo(18);
     }
 
     @Test

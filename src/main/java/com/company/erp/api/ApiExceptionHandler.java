@@ -112,10 +112,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ProblemDetail> handleApiException(
             ApiException exception, HttpServletRequest request) {
-        return response(problemDetails.create(
+        ProblemDetail problem = problemDetails.create(
                 exception.errorCode(),
                 exception.getMessage(),
-                request), exception.errorCode().status());
+                request);
+        return response(problem, exception.errorCode().status(), exception.retryAfterSeconds());
     }
 
     @ExceptionHandler(DuplicateKeyException.class)
@@ -192,10 +193,18 @@ public class ApiExceptionHandler {
     }
 
     private static ResponseEntity<ProblemDetail> response(ProblemDetail problem, HttpStatus status) {
+        return response(problem, status, null);
+    }
+
+    private static ResponseEntity<ProblemDetail> response(
+            ProblemDetail problem, HttpStatus status, Integer retryAfterSeconds) {
         ResponseEntity.BodyBuilder response = ResponseEntity.status(status)
                 .header(HttpHeaders.CONTENT_TYPE, "application/problem+json");
+        if (retryAfterSeconds != null) {
+            response.header(HttpHeaders.RETRY_AFTER, retryAfterSeconds.toString());
+        }
         if (problem.getInstance() != null
-                && problem.getInstance().getPath().startsWith("/api/v1/auth/")) {
+                && ApiProblemDetails.isProtectedNoStorePath(problem.getInstance().getPath())) {
             response.cacheControl(org.springframework.http.CacheControl.noStore());
         }
         return response.body(problem);

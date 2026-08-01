@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.MethodParameter;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -129,6 +130,23 @@ class ApiExceptionHandlerTest {
         assertProblem(conflict, HttpStatus.CONFLICT, ApiErrorCode.VERSION_CONFLICT);
         assertThat(conflict.getDetail()).isEqualTo("The resource changed after it was read.");
         assertThat(conflict.toString()).doesNotContain("UPDATE", "password_hash", "secret");
+    }
+
+    @Test
+    void addsRetryAfterAndNoStoreToTransactionContentionProblems() {
+        request = new MockHttpServletRequest("POST", "/api/v1/buyer-orders");
+
+        var response = handler.handleApiException(
+                new ApiException(ApiErrorCode.IDEMPOTENCY_IN_PROGRESS,
+                        "The command is in progress.", 2), request);
+
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+        assertThat(response.getBody().getProperties()).containsEntry(
+                "code", ApiErrorCode.IDEMPOTENCY_IN_PROGRESS.name());
+        assertThat(response.getBody().getInstance().toString()).isEqualTo("/api/v1/buyer-orders");
+        assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("2");
+        assertThat(response.getHeaders().getCacheControl()).isEqualTo("no-store");
     }
 
     @Test

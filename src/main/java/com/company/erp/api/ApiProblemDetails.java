@@ -41,10 +41,19 @@ public final class ApiProblemDetails {
             HttpServletRequest request) throws IOException {
         response.setStatus(errorCode.status().value());
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
-        if (request.getRequestURI().startsWith("/api/v1/auth/")) {
+        if (isProtectedNoStorePath(request.getRequestURI())) {
             response.setHeader("Cache-Control", "no-store");
         }
         objectMapper.writeValue(response.getOutputStream(), create(errorCode, detail, request));
+    }
+
+    static boolean isProtectedNoStorePath(String path) {
+        return path.startsWith("/api/v1/auth/")
+                || path.startsWith("/api/v1/buyer-orders")
+                || path.startsWith("/api/v1/production-")
+                || path.startsWith("/api/v1/stock-positions")
+                || path.startsWith("/api/v1/delivery-")
+                || path.startsWith("/api/v1/debit-notes");
     }
 
     private static String traceId(HttpServletRequest request) {
