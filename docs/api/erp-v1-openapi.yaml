@@ -3266,7 +3266,7 @@ components:
         finishedGoodId: { type: string, format: uuid }
         orderQty: { $ref: '#/components/schemas/DecimalQuantity' }
         unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
-        remark: { type: string }
+        remark: { type: string, maxLength: 200 }
     CustomBuyerOrderItemRequest:
       type: object
       additionalProperties: false
@@ -3275,26 +3275,26 @@ components:
       properties:
         isCustom: { type: boolean, const: true }
         productKind: { type: string, enum: [PRINT, WOVEN] }
-        styleNo: { type: string, minLength: 1 }
-        name: { type: string, minLength: 1 }
-        size: { type: string }
-        color: { type: string }
+        styleNo: { type: string, minLength: 1, maxLength: 120 }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        size: { type: string, maxLength: 120 }
+        color: { type: string, maxLength: 120 }
         uomId: { type: string, format: uuid }
         orderQty: { $ref: '#/components/schemas/DecimalQuantity' }
         unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
         currencyCode: { type: string, pattern: '^[A-Z]{3}$' }
-        remark: { type: string }
+        remark: { type: string, maxLength: 200 }
     BuyerOrderCreateRequest:
       type: object
       additionalProperties: false
       required: [orderType, customerId, picSource, picName, buyerPo, poDate, deliveryDate, items]
       properties:
-        orderType: { type: string, minLength: 1 }
+        orderType: { type: string, minLength: 1, maxLength: 80 }
         customerId: { type: string, format: uuid }
         customerContactId: { type: string, format: uuid }
         picSource: { type: string, enum: [MASTER, CUSTOM] }
-        picName: { type: string, minLength: 1 }
-        buyerPo: { type: string, minLength: 1 }
+        picName: { type: string, minLength: 1, maxLength: 200 }
+        buyerPo: { type: string, minLength: 1, maxLength: 120 }
         poDate: { type: string, format: date }
         deliveryDate: { type: string, format: date }
         items:
@@ -3307,12 +3307,12 @@ components:
       additionalProperties: false
       required: [orderType, customerId, picSource, picName, buyerPo, poDate, deliveryDate, items]
       properties:
-        orderType: { type: string, minLength: 1 }
+        orderType: { type: string, minLength: 1, maxLength: 80 }
         customerId: { type: string, format: uuid }
         customerContactId: { type: string, format: uuid }
         picSource: { type: string, enum: [MASTER, CUSTOM] }
-        picName: { type: string, minLength: 1 }
-        buyerPo: { type: string, minLength: 1 }
+        picName: { type: string, minLength: 1, maxLength: 200 }
+        buyerPo: { type: string, minLength: 1, maxLength: 120 }
         poDate: { type: string, format: date }
         deliveryDate: { type: string, format: date }
         items:
@@ -3326,14 +3326,14 @@ components:
       properties:
         poDate: { type: string, format: date }
         deliveryDate: { type: string, format: date }
-        buyerPo: { type: string }
-        reason: { type: string }
+        buyerPo: { type: string, maxLength: 120 }
+        reason: { type: string, maxLength: 200 }
     BuyerOrderCommandRequest:
       type: object
       additionalProperties: false
       required: [reason]
       properties:
-        reason: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
     BuyerOrderItemResponse:
       type: object
       additionalProperties: false

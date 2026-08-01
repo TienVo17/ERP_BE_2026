@@ -22,16 +22,16 @@ Repositories: `BE-ERP` (backend, this repository) and `ERP` (frontend).
 | 1.4 | Permission and archive matrix complete for ADMIN and SALE | Test | `AuthorizationMatrixIT`, `MasterDataPermissionMappingTest`, `PhaseOneMasterJourneyIT` |
 | 1.5 | Production-vs-demo frontend boundary explicit | Test | ERP `src/app/production-boundary.test.ts` |
 | 1.6 | Old BRD/mock conflicts marked superseded, history kept | Operator | `docs/operational-core-v1-spec.md` supersession section |
-| 1.7 | No Buyer Order/Production/Delivery implementation added | Test | ERP `production-boundary.test.ts`; backend has no such controller |
+| 1.7 | Transaction implementation is released sequentially behind the frozen contract | Test | `TransactionOpenApiContractTest`; Buyer Order tests cover the implemented slice |
 
 ## Database and privilege
 
 | # | Criterion | Kind | Evidence |
 |---|---|---|---|
 | 2.1 | `pom.xml` carries no JPA, H2 or Lombok | Test | `pom.xml` review; `PostgresTestConfiguration` starts real PostgreSQL |
-| 2.2 | V001–V012 byte-for-byte unchanged | Test | `MigrationImmutabilityTest.preservesV001ThroughV012ByteForByte` |
-| 2.3 | Migrations apply cleanly from empty PostgreSQL 16 | Test | `DatabaseMigrationIT` |
-| 2.4 | V011→V013 upgrade rehearsal on populated data | Test | `DatabaseUpgradeIT` |
+| 2.2 | V001–V014 byte-for-byte unchanged | Test | `MigrationImmutabilityTest.preservesV001ThroughV014ByteForByte` |
+| 2.3 | Migrations apply cleanly through V015 from empty PostgreSQL 16 | Test | `DatabaseMigrationIT.appliesV001ThroughV015WithTransactionCommandFoundation` |
+| 2.4 | V011→V015 upgrade rehearsal on populated data | Test | `DatabaseUpgradeIT.upgradesCleanV011DatabaseToV015WithoutLosingExistingRows` |
 | 2.5 | Runtime role can run auth and trigger paths but cannot mutate append-only records | Test | `RuntimePrivilegeIT`, `RuntimeCredentialIT` |
 | 2.6 | No production secret, key or default password in the repository | Test | `application.yml` is entirely env-driven; secret scan in the release gate |
 | 2.7 | Problem Detail contract | Test | `ApiExceptionHandlerTest`, `SecurityProblemDetailsIT` |

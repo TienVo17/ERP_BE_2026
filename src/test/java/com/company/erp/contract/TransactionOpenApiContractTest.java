@@ -212,6 +212,28 @@ class TransactionOpenApiContractTest {
     }
 
     @Test
+    void boundsBuyerOrderTextToKeepCommandResponsesReplayable() throws IOException {
+        Map<String, Object> schemas = schemas();
+
+        assertThat(map(properties(map(schemas.get("StandardBuyerOrderItemRequest"))).get("remark")))
+                .containsEntry("maxLength", 200);
+        Map<String, Object> custom = properties(map(schemas.get("CustomBuyerOrderItemRequest")));
+        assertThat(map(custom.get("styleNo"))).containsEntry("maxLength", 120);
+        assertThat(map(custom.get("name"))).containsEntry("maxLength", 200);
+        assertThat(map(custom.get("size"))).containsEntry("maxLength", 120);
+        assertThat(map(custom.get("color"))).containsEntry("maxLength", 120);
+        assertThat(map(custom.get("remark"))).containsEntry("maxLength", 200);
+        assertThat(map(properties(map(schemas.get("BuyerOrderCommandRequest"))).get("reason")))
+                .containsEntry("maxLength", 200);
+        for (String name : List.of("BuyerOrderCreateRequest", "BuyerOrderUpdateRequest")) {
+            Map<String, Object> properties = properties(map(schemas.get(name)));
+            assertThat(map(properties.get("orderType"))).containsEntry("maxLength", 80);
+            assertThat(map(properties.get("picName"))).containsEntry("maxLength", 200);
+            assertThat(map(properties.get("buyerPo"))).containsEntry("maxLength", 120);
+        }
+    }
+
+    @Test
     void capsCollectionsAndCarriesEveryBusinessDecimalAsAString() throws IOException {
         Map<String, Object> schemas = schemas();
 

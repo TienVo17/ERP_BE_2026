@@ -7,7 +7,7 @@ rehearsal. Commands that were not run are marked as such.
 
 | Artifact | Identity | Notes |
 |---|---|---|
-| Backend | `be-erp-0.0.1-SNAPSHOT.jar` (Spring Boot 4.1, Java 21) | Schema at Flyway `V014` |
+| Backend | `be-erp-0.0.1-SNAPSHOT.jar` (Spring Boot 4.1, Java 21) | Schema at Flyway `V015` |
 | Frontend | Vite production build of `ERP` | Served as static files behind the same origin |
 | Database | PostgreSQL 16 | Two roles: a migration owner and a runtime login |
 
@@ -40,13 +40,13 @@ in `application.yml`, and the repository contains no key, password or dotenv fil
 pg_dump -U <owner> -d erp -Fc -f erp-<timestamp>.dump
 ```
 
-Verified: a restore of this dump returns the schema at `V014`, keeps every row written before the
-dump, drops every row written after it, and preserves the runtime role's grants.
+Verify the restored schema version and runtime grants before restarting. A restore returns the schema
+version captured by the dump, keeps rows written before it, and drops rows written after it.
 
 ### 2. Provision roles, once per environment
 
 The migration owner and the serving login must be different, and the database must name the runtime
-role before Flyway runs, because `V010` and `V014` read `erp.runtime_role` to build their grants.
+role before Flyway runs, because `V010`, `V014`, and `V015` read `erp.runtime_role` to build their grants.
 
 ```sql
 CREATE ROLE erp_runtime LOGIN PASSWORD '<secret>';
@@ -65,7 +65,7 @@ Run the jar once with the owner credentials and `ERP_FLYWAY_ENABLED=true`, then 
 SELECT version, success FROM flyway_schema_history ORDER BY installed_rank;
 ```
 
-All fourteen migrations must be present and successful. `V001`–`V013` are frozen; a hash mismatch
+All fifteen migrations must be present and successful. `V001`–`V015` are frozen; a hash mismatch
 means someone edited an applied migration and the release must stop.
 
 ### 4. Bootstrap the first administrator

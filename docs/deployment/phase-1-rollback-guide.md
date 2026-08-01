@@ -32,19 +32,19 @@ schema is forward-compatible for additive changes and nothing further is require
 
 ### 3. Backend, schema-changed case
 
-`V014` only adds privilege grants; it removes nothing and rewrites no data, so the previous jar runs
-unchanged against a `V014` database. In general, prefer a **forward fix** over reversing a
-migration: applied migrations `V001`–`V013` are frozen, and Flyway will refuse to run if their
-hashes change.
+`V015` changes the command/idempotency schema and preserves Buyer Order revision history. Do not
+assume an earlier jar is compatible with a `V015` database; use a tested forward fix or restore a
+backup when rollback is necessary. Applied migrations `V001`–`V015` are frozen, and Flyway will
+refuse to run if their hashes change.
 
 A migration is only reversed by restoring a backup. That is a data-loss event and needs an explicit
 decision, not a runbook step.
 
 ## Restore drill
 
-Rehearsed during Phase 8 with these results: the restored database returned to `V014`, kept every
-row written before the dump, dropped the row written after it, preserved the runtime role's DELETE
-grants, and served traffic again on restart.
+A restore returns the schema version captured by the dump, keeps rows written before that dump,
+and drops rows written after it. Verify the restored Flyway version and required runtime privileges
+before serving traffic again.
 
 ```bash
 # 1. stop the serving instance so it releases its connections

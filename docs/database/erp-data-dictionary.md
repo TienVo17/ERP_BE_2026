@@ -2,7 +2,7 @@
 
 ## Tổng quan
 
-Đây là logical reference đã áp dụng các quyết định được xác nhận. DDL triển khai được quản lý bằng Flyway qua V001-V013; tài liệu này mô tả table/column/type/constraint/index intent và phải được cập nhật cùng forward migrations.
+Đây là logical reference đã áp dụng các quyết định được xác nhận. DDL triển khai được quản lý bằng Flyway qua V001-V015; tài liệu này mô tả table/column/type/constraint/index intent và phải được cập nhật cùng forward migrations.
 
 ## Convention chung
 
@@ -68,16 +68,24 @@ Chống command retry tạo side effect kép.
 | Column | Type | Null | Rule |
 |---|---|---:|---|
 | `id` | uuid | No | PK |
-| `scope` | varchar(60) | No | command type |
+| `scope` | varchar(128) | No | legacy/diagnostic command scope |
+| `scope_digest` | bytea | Yes | SHA-256 scope digest; 32 bytes when present |
+| `actor_user_id` | uuid | Yes | caller identity for scoped commands |
+| `request_method`, `normalized_path` | varchar | Yes | command method and normalized path |
 | `idempotency_key` | varchar(120) | No | caller-provided opaque key |
 | `request_hash` | varchar(128) | No | phát hiện key reuse khác payload |
+| `command_id` | uuid | Yes | internal command identity |
 | `resource_type` | varchar(60) | Yes | result aggregate type |
 | `resource_id` | uuid | Yes | result aggregate ID |
-| `status` | varchar(20) | No | `IN_PROGRESS`, `COMPLETED`, `FAILED` theo implementation policy |
+| `status` | varchar(20) | No | `IN_PROGRESS`, `COMPLETED`, `RETRYABLE`, `QUARANTINED` |
+| `response_status`, `response_content_type`, `response_body` | mixed | Yes | bounded public replay; body ≤ 262,144 bytes |
+| `completed_at` | timestamptz | Yes | completion timestamp |
+| `lease_owner`, `lease_generation`, `lease_expires_at` | mixed | Yes | fenced execution lease while `IN_PROGRESS` |
 | `created_at`, `expires_at` | timestamptz | No | retention theo command |
 
-- Unique: `(scope, idempotency_key)`.
-- Không lưu raw credential/request body nhạy cảm.
+- Unique `(scope_digest, idempotency_key)` when the digest is present; legacy `(scope, idempotency_key)` remains for pre-V015 rows.
+- V014 rows without replay bytes become `QUARANTINED`; unfinished legacy rows become `RETRYABLE` during V015 upgrade.
+- Không lưu raw request body, credential, token, authorization header hoặc cookie; only bounded public response bytes are retained.
 
 ## Schema `identity`
 
@@ -410,11 +418,13 @@ Master only, không inventory accumulator.
 | `buyer_po` | varchar(120) | No | external customer reference |
 | `po_date`, `delivery_date` | date | No | business dates |
 | `status` | varchar(20) | No | `STANDBY`, `CONFIRMED` |
+| `active_revision` | integer | No | current editable/confirmed revision; `> 0` |
 | common audit/version | — | No | audit/optimistic lock |
 
-- Check `delivery_date >= po_date` nếu business confirms; currently application validation candidate.
+- Check `delivery_date >= po_date` at both API and database boundaries.
 - Check PIC source/FK consistency: MASTER requires contact ID, CUSTOM requires contact ID null.
 - Composite FK `(customer_contact_id, customer_id)` → `customer_contact(id, customer_id)` chứng minh contact thuộc đúng Customer; không chỉ dựa application validation.
+- Reopen advances `active_revision` in the same transaction. It is blocked after Production grouping/finish, Stock, or Delivery activity; prior items and Production Orders are cancelled and retained.
 - Index: unique sys PO; `(status, po_date)`, `(customer_id, po_date)`, external `buyer_po` search.
 
 ### `buyer_order_item`
@@ -423,7 +433,10 @@ Master only, không inventory accumulator.
 |---|---|---:|---|
 | `id` | uuid | No | PK |
 | `buyer_order_id` | uuid | No | FK Buyer Order |
-| `line_no` | integer | No | `> 0`, unique/order |
+| `revision` | integer | No | Buyer Order revision; `> 0` |
+| `active_revision` | boolean | No | true only for the current revision |
+| `status` | varchar(20) | No | `ACTIVE` or `CANCELLED` |
+| `line_no` | integer | No | `> 0`, unique/revision |
 | `is_custom` | boolean | No | custom-vs-master mode |
 | `finished_good_id` | uuid | Yes | FK F/G; required iff not custom |
 | product/style/name/size/color snapshots | varchar | Mixed | product/style/name required |
@@ -438,7 +451,8 @@ Master only, không inventory accumulator.
 | `remark` | text | Yes | optional |
 | common audit columns | — | No | immutable after confirm |
 
-- Unique `(buyer_order_id, line_no)` và unique `(id, buyer_order_id)` để Production Order dùng composite source FK.
+- Unique `(buyer_order_id, revision, line_no)` and partial unique `(buyer_order_id, line_no) WHERE active_revision`; unique `(id, buyer_order_id)` supports the Production source FK.
+- Active lines require `status=ACTIVE`; retired lines carry `active_revision=false`, `status=CANCELLED`, and remain immutable history.
 - Check `(is_custom AND finished_good_id IS NULL) OR (!is_custom AND finished_good_id IS NOT NULL)`.
 - Check `use_stock_qty = 0` trong phase đầu; backend trả business error nếu client gửi giá trị dương.
 - DB generated/check formula may be evaluated in DDL design; application always recomputes.
@@ -471,13 +485,14 @@ Master only, không inventory accumulator.
 | `qr_value` | varchar(255) | No | immutable unique |
 | `planned_qty` | numeric(18,4) | No | from BO production qty |
 | `produced_qty` | numeric(18,4) | Yes | set exactly once on finish; `>= 0` |
-| `status` | varchar(20) | No | `OPEN`, `FINISHED` |
+| `status` | varchar(20) | No | `OPEN`, `FINISHED`, `CANCELLED` |
 | `finished_at`, `finished_by` | timestamptz/uuid | Yes | both present iff FINISHED |
 | common audit/version | — | No | optimistic lock |
 
 - One Production Order per BO Item.
 - Composite FK `(buyer_order_item_id, buyer_order_id)` → `buyer_order_item(id, buyer_order_id)` chứng minh Production Order thuộc đúng Buyer Order của source item.
 - Unique `(id, buyer_order_item_id)` để Stock Position dùng composite source FK.
+- Reopen cancels prior OPEN orders. FINISHED orders block reopen; FINISHED and CANCELLED rows/configuration are immutable historical evidence.
 - Finish once; status/fields consistency checks.
 - Index: `(status, created_at)`, group, source item.
 

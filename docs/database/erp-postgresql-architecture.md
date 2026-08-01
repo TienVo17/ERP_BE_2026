@@ -320,7 +320,7 @@ Schema hiện được quản lý bằng Flyway tại `src/main/resources/db/mig
 
 ## F/G application contract status
 
-The transaction API contract is now frozen over immutable V001–V014. No applied migration is edited. V015 will add the durable command/idempotency lease fence, history-preserving Buyer Order revision/cancellation fields, server-owned Production group allocation support, and least-privilege runtime grants including bounded idempotency cleanup. V016 later adds Delivery replacement-lineage guards after Delivery application behavior is green. Every created object receives explicit runtime grants because older grants are not inherited.
+The transaction API contract is frozen and applied migrations V001–V015 are immutable. V015 adds the durable command/idempotency lease fence, history-preserving Buyer Order revision/cancellation fields, Production cancellation guards, and least-privilege runtime grants including bounded idempotency cleanup. V016 later adds Delivery replacement-lineage guards after Delivery application behavior is green. Every created object receives explicit runtime grants because older grants are not inherited.
 
 Application commands keep `READ COMMITTED`, take the existing V012/V013 global transaction advisory coordination before guarded relationship writes, and acquire aggregate/Stock UUID row locks in ascending order. Expected domain failures are stored only after rolling back to an execution savepoint; unexpected SQL/commit failures roll back and are never replayed as public 4xx. Stock movements store the internal command UUID/scope digest rather than the raw client key.
 
