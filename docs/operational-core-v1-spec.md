@@ -14,9 +14,41 @@ The database design is retained at [ERP PostgreSQL architecture](database/erp-po
 
 ## Release boundary
 
-Production serves only `/api/v1` Auth, Admin, Currency, UOM, monthly Exchange Rate, Customer/PIC, Supplier/PIC, Process, Raw Material, and Finished Good. All business APIs require bearer access tokens except the listed cookie-backed Auth endpoints. The SPA retains access JWTs only in memory.
+Production `/api/v1` serves Auth, Admin, Master Data, Buyer Order, Production, finished-goods Stock, Delivery, and the read-only Debit projection. All business APIs require bearer access tokens except the listed cookie-backed Auth endpoints. The SPA retains access JWTs only in memory.
 
-Buyer Order, Production, Delivery, Debit, and Stock are deferred: they have no v1 transaction endpoints, persistence implementation, production routes, or production renderer in Phase 1. An optional development demo may retain mock storage only behind a separate demo route/renderer/API boundary. It must not import production master data or be reachable in production merely because a navigation item is hidden.
+Transaction APIs are contract-frozen here for the F/G production release and are implemented sequentially after this contract phase. The optional historical demo remains isolated behind its own entry, renderer, and adapters until frontend cutover; it is not a fallback for production behavior and no LocalStorage transaction data is migrated.
+
+## F/G transaction workflows
+
+### Buyer Order
+
+- Create allocates immutable `SO-YYYY-NNNNNN` from the server allocation year and creates revision 1 in `STANDBY`.
+- Each request has 1–100 lines. Standard lines reference an ACTIVE Finished Good; their product/UOM snapshots derive from that master and their currency derives from the Buyer Order Customer's mandatory currency, regardless of optional Finished Good reference pricing. Custom lines carry required product/UOM/currency values to snapshot. `useStockQty` is zero and `productionQty` equals `orderQty` in this release.
+- Confirm changes `STANDBY → CONFIRMED`, snapshots canonical master data, and creates exactly one `OPEN` Production Order for each active line. It never creates stock. PR year is the confirm-command date in `Asia/Bangkok`.
+- Reopen is allowed only before grouping, finish, Stock, or Delivery activity. It cancels the confirmed revision's items and OPEN Production Orders without deleting them, then creates an editable active revision. Reconfirm creates new Production Orders while preserving the full previous history.
+- Copy creates an independent STANDBY order and a new SO number.
+
+### Production and Stock
+
+- `productNo` is the immutable Buyer Order item style snapshot, `qrValue` equals server-allocated `productionNo`, and group number is `PG-<SYS-PO>-NNN` within one Buyer Order. Clients cannot supply these fields.
+- Groups contain 2–50 unique OPEN Production Orders from one Buyer Order. Create carries each member's expected version; ungroup versions the group with quoted `If-Match`.
+- Configuration is full replacement while OPEN, matches PRINT/WOVEN subtype, and caps process and yarn rows at 100 each. Configuration and events remain immutable after FINISHED or CANCELLED.
+- Finish accepts no produced quantity. It sets produced quantity to planned quantity and atomically creates one Stock Position plus one positive PRODUCTION movement. This is the only physical-stock creation path.
+- Stock Movement is append-only truth; Stock Position is its transactionally reconciled current read model. Return references one POSTED Delivery item and cannot exceed net returnable quantity. Dispose cannot exceed current quantity.
+
+### Delivery and Debit
+
+- Delivery draft/update accepts 1–100 Stock Position lines. Customer and currency are derived from authoritative positions. Totals, snapshots, exchange rate, status, and audit fields are server-owned.
+- Post locks positions in ascending UUID order, validates stock/order capacity, snapshots the active exchange-rate month for `deliveryDate`, allocates `DN-YYYY-NNNNNN` using the business-date year, appends outbound movements, and updates positions atomically.
+- Reverse is blocked after any Return. Otherwise it restores stock, marks the source REVERSED, and creates exactly one linked replacement DRAFT with no DN. Each source has at most one successor and each replacement one predecessor, forming a linear acyclic chain; a posted successor may later be reversed into the next draft.
+- Debit is a live read-only projection of POSTED Delivery lines. List and XLSX export use the same filters/sort and no mutable Debit aggregate or number exists.
+
+### Transaction command, report, and paging policy
+
+- Quoted `If-Match` is required on mutable aggregate updates/transitions. Missing/malformed values are 400; stale values remain `409 VERSION_CONFLICT`.
+- Side-effecting create/update/transition commands require `Idempotency-Key`. Scope is actor + method + normalized path; the hash includes body and `If-Match`. Completed results replay exact public JSON; conflicting hash is 422; active execution is 409 with `Retry-After: 2`; retention is 24 hours.
+- Transaction lists are zero-based page 0, default size 25, maximum 100, with only OpenAPI-declared filters/sorts and a stable ID tie-breaker.
+- Production PDF (`PRODUCTION:VIEW`), Delivery PDF (`DELIVERY:PRINT`), and Debit XLSX (`DELIVERY:EXPORT`) are generated synchronously, streamed, sent with `Cache-Control: no-store`, and never retained. At most two reports run concurrently; overflow is `429 REPORT_BUSY` with `Retry-After: 5`. Debit export rejects more than 50,000 rows and neutralizes spreadsheet formula injection.
 
 Media is deferred. Phase 1 has no upload/object storage or binary persistence. Avatar, picture, Finished Good image, Data URL, image-name, and token fields are absent from operational responses and examples. No localStorage mock identity/master/transaction data is migrated to PostgreSQL.
 
@@ -32,13 +64,13 @@ Media is deferred. Phase 1 has no upload/object storage or binary persistence. A
 - IP allowlist endpoints manage entries only. The list response always reports `enforced: false`; there is no global enable/disable endpoint, persisted toggle, or access blocking in Phase 1. An entry's `active` flag records intent, not enforcement.
 - Immutable business keys are absent from update requests: customer `shortName`, process `qrValue`, user `loginId`, and role `code`.
 - The migration-seeded `SYSTEM` principal owns reference rows and is never administrable: it is excluded from `/admin/users`, from role and override targets, from password reset, and from the recovery-admin count.
-- Phase 1 exposes no usage-lock flag. The old mock booleans `usedInPurchaseOrder`, `usedInTransactions`, `usedInProduction`, and `usedInFgRouting` are removed rather than reimplemented, because every transaction module that could create usage is deferred and no production data can be in use yet. Guards remain server-side and derived from real relationships, returning `MASTER_IN_USE`. When transaction modules land, they must add a derived read-only usage projection to this contract rather than accept a client-supplied flag.
+- No client supplies a usage-lock flag. The old mock booleans `usedInPurchaseOrder`, `usedInTransactions`, `usedInProduction`, and `usedInFgRouting` remain removed. Master lifecycle guards derive usage from persisted Buyer Order, Production, Stock, and Delivery relationships and return `MASTER_IN_USE`.
 
 ## Authorization catalog
 
 The catalog is exactly the permission rows seeded by `V009__seed_reference_data.sql`: `RAW_MATERIAL`, `FINISHED_GOODS`, `CUSTOMER`, `SUPPLIER`, `PROCESS`, and `ETC` each define `VIEW`, `CREATE`, `UPDATE`, `ARCHIVE`; transaction modules retain only their seeded actions; `ADMIN` defines `MANAGE_USERS`, `MANAGE_ROLES`, `MANAGE_ALLOWLIST`, and `VIEW_AUDIT`.
 
-`ADMIN` receives every V009 permission. `SALE` baseline is specifically `VIEW`, `CREATE`, and `UPDATE` for the six business-master modules above, and no `ARCHIVE`, no ADMIN permission, and no transaction grant. This Phase 1 grant is applied by a forward migration, not by editing V009. Effective permission precedence is explicit user `DENY` > explicit user `ALLOW` > role grant > default `DENY`; a DENY therefore overrides ADMIN or SALE role membership.
+`ADMIN` receives every V009 permission. `SALE` baseline keeps `VIEW`, `CREATE`, and `UPDATE` for the six business-master modules, receives all 18 transaction permissions already catalogued by V009 (5 Buyer Order, 4 Production, 6 Delivery, 3 Stock), and receives no master `ARCHIVE` or ADMIN permission. The transaction grants are applied by the next forward migration, never by editing V009/V011. Effective permission precedence remains explicit user `DENY` > explicit user `ALLOW` > role grant > default `DENY`; a DENY therefore overrides ADMIN or SALE role membership.
 
 Administrative authority is split across separate commands so that user administration cannot silently grant authority: profile, status, and password reset require `ADMIN:MANAGE_USERS`, while role assignment and permission overrides require `ADMIN:MANAGE_ROLES`. Overrides reference seeded permission IDs, so no client can invent a module or action. See [authentication and authorization](security/authentication-and-authorization.md).
 
@@ -67,9 +99,9 @@ There is no account lockout. A single-instance in-memory limiter keys on trusted
 | `ProcessMaster`, `processMasterApi` | `/master-data/processes` | Process master |
 | `RawMaterial`, `rawMaterialApi` | `/master-data/raw-materials` | Product master |
 | `FinishedGood`, `finishedGoodApi` | `/master-data/finished-goods` | Product master; images removed |
-| Buyer Order / Production / Delivery / Debit / Stock mock APIs | no production endpoint | Deferred, demo-only and isolated |
+| Buyer Order / Production / Delivery / Debit / Stock mock APIs | `/api/v1/buyer-orders`, `/production-orders`, `/stock-positions`, `/delivery-notes`, `/debit-notes` | Production contract frozen; demo remains isolated until frontend cutover |
 
-The old transaction consumers of `UnitOfMeasure` and `ExchangeRate`—Buyer Order items, Production configuration, Delivery Note/items/rates, Debit Note, and Stock—are explicitly deferred demo consumers. They must use demo adapters, not the Phase 1 production Unit/Rate APIs.
+Production Buyer Order, Production, Delivery, Debit, and Stock resolve canonical UOM and exchange-rate data through backend-owned master relationships. The isolated demo continues to use demo Unit/Rate adapters and may not import production master adapters.
 
 ## Historical preservation
 

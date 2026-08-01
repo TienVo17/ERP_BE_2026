@@ -12,7 +12,9 @@ Business APIs accept `Authorization: Bearer <access JWT>` only. They do not auth
 
 Every create/update/command schema is closed with `additionalProperties: false`. Unknown properties fail with `400`/`INVALID_REQUEST`; server-owned IDs, version, status, timestamps, audit fields, password hashes, tokens, Data URLs, media fields, and derived usage flags are rejected rather than ignored.
 
-Use `If-Match: "<version>"` for updates, archive transitions, and destructive admin commands, including password reset. A stale version returns `409 VERSION_CONFLICT`.
+Use `If-Match: "<version>"` for updates, archive transitions, destructive admin commands, and versioned transaction commands. Missing and malformed/unquoted values return `400 IF_MATCH_REQUIRED` and `400 INVALID_IF_MATCH`; a stale version remains `409 VERSION_CONFLICT`.
+
+Side-effecting transaction create/update/transition commands also require `Idempotency-Key` with 1–120 characters. Scope is actor + method + normalized path, and the request hash includes the body plus `If-Match`. A completed same-hash request replays the exact public JSON status/body; another hash returns `422 IDEMPOTENCY_KEY_REUSED`; active execution returns `409 IDEMPOTENCY_IN_PROGRESS` with `Retry-After: 2`. Records retain for 24 hours. Request bodies, credentials, tokens, authorization headers, cookies, report bytes, and unexpected errors are never stored in an idempotency record.
 
 PUT is **full replacement**, never a partial merge. An omitted optional member clears that value, so a client must send the complete intended state. The one exception is a flag whose invariant spans siblings: an omitted contact `isDefault` leaves the existing default untouched, because clearing it silently would leave an owner with no default and no constraint violation. Clearing a default is done by promoting another contact.
 
@@ -23,8 +25,10 @@ Decimal values are JSON **strings**, never IEEE-754 numbers:
 | `DecimalQuantity` | 4 | non-negative |
 | `DecimalPrice` | 6 | non-negative |
 | `DecimalRate` | 6 | strictly positive |
+| `DecimalAmount` | 2 | non-negative, server-computed |
+| `DecimalPercent` | 4 | 0 through 100 |
 
-Reference prices use the six-decimal price scale because persistence stores `numeric(18,6)`. Monetary document totals are out of Phase 1 scope.
+Reference and transaction prices use the six-decimal price scale because persistence stores `numeric(18,6)`. Item amount is rounded half-up to scale 2, then a document total sums its already-rounded items. Client requests never own amount or total fields.
 
 ## Lists, filters, and sorting
 
@@ -79,8 +83,31 @@ Stable error-code registry:
 | `EXCHANGE_RATE_MISSING` | 409 | Required monthly rate is absent |
 | `RATE_LIMITED` | 429 | Trusted-IP throttle without account disclosure |
 | `INTERNAL_ERROR` | 500 | Unexpected server error; message never echoed to client |
+| `IF_MATCH_REQUIRED` | 400 | Versioned transaction command omitted `If-Match` |
+| `INVALID_IF_MATCH` | 400 | Version header is malformed or unquoted |
+| `IDEMPOTENCY_KEY_REQUIRED` | 400 | Side-effecting transaction command omitted its key |
+| `INVALID_IDEMPOTENCY_KEY` | 400 | Key is blank or exceeds 120 characters |
+| `IDEMPOTENCY_KEY_REUSED` | 422 | Same scope/key was used with a different request hash |
+| `IDEMPOTENCY_IN_PROGRESS` | 409 | Same-hash command is active; retry after two seconds |
+| `IDEMPOTENCY_RESULT_EXPIRED` | 410 | Quarantined legacy result cannot be replayed before purge |
+| `INVALID_STATE_TRANSITION` | 409 | Aggregate cannot perform the requested transition |
+| `DOWNSTREAM_ACTIVITY_EXISTS` | 409 | Reopen/cancel would violate retained downstream history |
+| `GROUP_MEMBERSHIP_INVALID` | 409 | Group members violate scope, state, count, or uniqueness |
+| `PRODUCTION_ALREADY_FINISHED` | 409 | Finish was already committed |
+| `INSUFFICIENT_STOCK` | 409 | Delivery or adjustment exceeds authoritative stock |
+| `DELIVERY_ALREADY_POSTED` | 409 | Draft-only command targets a posted Delivery |
+| `DELIVERY_ALREADY_REVERSED` | 409 | Reverse was already committed |
+| `DELIVERY_HAS_RETURNS` | 409 | A Delivery with customer Returns cannot be reversed |
+| `RETURN_LIMIT_EXCEEDED` | 409 | Return exceeds net returnable Delivery quantity |
+| `DISPOSAL_EXCEEDS_STOCK` | 409 | Disposal exceeds current stock |
+| `REPORT_LIMIT_EXCEEDED` | 413 | Debit export exceeds 50,000 rows |
+| `REPORT_BUSY` | 429 | Both synchronous report slots are occupied; retry after five seconds |
 
-Every protected operation documents at least `401` and `403`, plus `400`, `404`, `409`, and `429` where applicable. Constraint violations map to these codes without exposing SQL detail.
+Every protected operation documents at least `401` and `403`, plus `400`, `404`, `409`, `410`, `413`, `422`, and `429` where applicable. Constraint violations map to these codes without exposing SQL detail.
+
+## Transaction reports
+
+Production and Delivery PDFs plus Debit XLSX are safe GET regenerations from canonical persisted data. The backend generates them synchronously, streams the response, sets a sanitized `Content-Disposition` plus `Cache-Control: no-store`, and retains no artifact. At most two report generations run concurrently on the single backend instance; a third is rejected before work starts with `429 REPORT_BUSY` and `Retry-After: 5`. Debit XLSX uses exactly the Debit list filter/sort contract, rejects more than 50,000 rows, and writes user/business strings as literal cells so leading formula characters are never interpreted.
 
 ## Status and archive
 

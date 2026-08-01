@@ -1713,6 +1713,731 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/buyer-orders:
+    get:
+      operationId: listBuyerOrders
+      summary: "List Buyer Orders"
+      description: "Zero-based page. Filters: status, customerId, sysPoNo, buyerPo, poDateFrom, poDateTo. Sort allowlist is sysPoNo, poDate, deliveryDate, status and id."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: status, in: query, schema: { type: string, enum: [STANDBY, CONFIRMED] } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: sysPoNo, in: query, schema: { type: string } }
+        - { name: buyerPo, in: query, schema: { type: string } }
+        - { name: poDateFrom, in: query, schema: { type: string, format: date } }
+        - { name: poDateTo, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: "Paged Buyer Orders."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderPageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createBuyerOrder
+      summary: "Create a STANDBY Buyer Order and allocate its SO number"
+      description: "SO year is the server allocation year. The client supplies no number, status, snapshot, amount, or audit field."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:CREATE"
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderCreateRequest' } } }
+      responses:
+        '201':
+          description: "Buyer Order created."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/IdempotencyInProgress' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/buyer-orders/{id}:
+    get:
+      operationId: getBuyerOrder
+      summary: "Read one Buyer Order with its active revision and preserved history"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:VIEW"
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: "Buyer Order detail."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateBuyerOrder
+      summary: "Replace the editable STANDBY revision"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:UPDATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderUpdateRequest' } } }
+      responses:
+        '200':
+          description: "Draft revision replaced."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/buyer-orders/{id}/copy:
+    post:
+      operationId: copyBuyerOrder
+      summary: "Copy one Buyer Order into a new STANDBY order with a new SO number"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:CREATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderCopyRequest' } } }
+      responses:
+        '201':
+          description: "Independent STANDBY copy created."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/buyer-orders/{id}/confirm:
+    post:
+      operationId: confirmBuyerOrder
+      summary: "Confirm a Buyer Order and create one Production Order per active item"
+      description: "PR year comes from the command date in Asia/Bangkok. Confirmation creates no stock."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:CONFIRM"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderCommandRequest' } } }
+      responses:
+        '200':
+          description: "Confirmed order plus generated Production Orders."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderConfirmResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/buyer-orders/{id}/reopen:
+    post:
+      operationId: reopenBuyerOrder
+      summary: "Preserve confirmed history and create a new editable Buyer Order revision"
+      description: "Reject when Production was grouped/finished or Stock/Delivery activity exists. Old items and Production Orders are cancelled, never deleted."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "BUYER_ORDER:REOPEN"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderCommandRequest' } } }
+      responses:
+        '200':
+          description: "History-preserving active revision."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BuyerOrderResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/production-orders:
+    get:
+      operationId: listProductionOrders
+      summary: "List Production Orders"
+      description: "Filters: status, buyerOrderId, productionNo, productKind, groupNo. Sort allowlist is productionNo, status, createdAt and id."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: status, in: query, schema: { type: string, enum: [OPEN, FINISHED, CANCELLED] } }
+        - { name: buyerOrderId, in: query, schema: { type: string, format: uuid } }
+        - { name: productionNo, in: query, schema: { type: string } }
+        - { name: productKind, in: query, schema: { type: string, enum: [PRINT, WOVEN] } }
+        - { name: groupNo, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: "Paged Production Orders."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionOrderPageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/production-orders/{id}:
+    get:
+      operationId: getProductionOrder
+      summary: "Read one Production Order with configuration and group"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:VIEW"
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: "Production Order detail."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionOrderResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/production-orders/{id}/configuration:
+    put:
+      operationId: configureProductionOrder
+      summary: "Replace the matching PRINT or WOVEN configuration while OPEN"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:CONFIGURE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductionConfigurationRequest' } } }
+      responses:
+        '200':
+          description: "Canonical configuration saved and event appended."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionOrderResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/production-orders/{id}/finish:
+    post:
+      operationId: finishProductionOrder
+      summary: "Finish Production once and atomically create FG stock"
+      description: "The command accepts no produced quantity; produced quantity equals planned quantity."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:FINISH"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductionCommandRequest' } } }
+      responses:
+        '200':
+          description: "Finished Production and reconciled Stock Position."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionFinishResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/production-orders/{id}/events:
+    get:
+      operationId: listProductionEvents
+      summary: "Read append-only Production history"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: "Sort allowlist is occurredAt and id."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionEventPageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/production-orders/{id}/document.pdf:
+    get:
+      operationId: downloadProductionDocument
+      summary: "Stream the Production PDF for OPEN or FINISHED status"
+      description: "Generated synchronously from canonical data, explicitly labels status, and is never persisted."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:VIEW"
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: "Production PDF."
+          headers:
+            Content-Disposition: { $ref: '#/components/headers/ContentDisposition' }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content: { application/pdf: { schema: { type: string, format: binary } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/ReportBusy' }
+  /api/v1/production-groups:
+    post:
+      operationId: createProductionGroup
+      summary: "Group 2 to 50 OPEN Production Orders from one Buyer Order"
+      description: "Each unique member carries its own expectedVersion. groupNo is server-generated as PG-<SYS-PO>-NNN."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:GROUP"
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductionGroupCreateRequest' } } }
+      responses:
+        '201':
+          description: "Group created with canonical members."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionGroupResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/production-groups/{id}/ungroup:
+    post:
+      operationId: ungroupProductionGroup
+      summary: "Ungroup an OPEN Production Group"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "PRODUCTION:GROUP"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductionCommandRequest' } } }
+      responses:
+        '200':
+          description: "Group removed and member events appended."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductionGroupResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/stock-positions:
+    get:
+      operationId: listStockPositions
+      summary: "List current finished-goods Stock Positions"
+      description: "Filters: customerId, productionOrderId, inStock. Sort allowlist is currentQty, updatedAt and id."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "STOCK:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: productionOrderId, in: query, schema: { type: string, format: uuid } }
+        - { name: inStock, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: "Paged Stock Positions."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionPageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/stock-positions/{id}:
+    get:
+      operationId: getStockPosition
+      summary: "Read one current Stock Position"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "STOCK:VIEW"
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: "Stock Position."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/stock-positions/{id}/movements:
+    get:
+      operationId: listStockMovements
+      summary: "Read append-only movement history"
+      description: "Filters: movementType, businessDateFrom, businessDateTo. Sort allowlist is occurredAt, businessDate and id."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "STOCK:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: movementType, in: query, schema: { type: string, enum: [PRODUCTION, DELIVERY, DELIVERY_REVERSAL, RETURN, DISPOSE] } }
+        - { name: businessDateFrom, in: query, schema: { type: string, format: date } }
+        - { name: businessDateTo, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: "Paged immutable movements."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/StockMovementPageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/stock-positions/{id}/eligible-return-sources:
+    get:
+      operationId: listEligibleReturnSources
+      summary: "Read only minimal delivered-line fields needed for a Return"
+      description: "STOCK:RETURN is sufficient; this endpoint does not confer DELIVERY:VIEW."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "STOCK:RETURN"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: "Sort allowlist is deliveryDate, deliveryNo and deliveryNoteItemId."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/EligibleReturnSourcePageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/stock-positions/{id}/returns:
+    post:
+      operationId: recordStockReturn
+      summary: "Append a customer Return against one eligible Delivery line"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "STOCK:RETURN"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/StockReturnRequest' } } }
+      responses:
+        '200':
+          description: "Movement appended and Stock Position reconciled."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/StockCommandResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/stock-positions/{id}/disposals:
+    post:
+      operationId: recordStockDisposal
+      summary: "Append a finished-goods disposal"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "STOCK:DISPOSE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/StockDisposalRequest' } } }
+      responses:
+        '200':
+          description: "Movement appended and Stock Position reconciled."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/StockCommandResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/delivery-sources:
+    get:
+      operationId: listDeliverySources
+      summary: "List minimal Stock source fields needed to compose a Delivery draft"
+      description: "DELIVERY:CREATE is sufficient; this endpoint does not confer DELIVERY:VIEW. Filters: customerId, sysPoNo, buyerPo, inStock. Sort allowlist is sysPoNo, availableQty and stockPositionId."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:CREATE"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: sysPoNo, in: query, schema: { type: string } }
+        - { name: buyerPo, in: query, schema: { type: string } }
+        - { name: inStock, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: "Redacted Delivery source page."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliverySourcePageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/delivery-notes:
+    get:
+      operationId: listDeliveryNotes
+      summary: "List Delivery Notes"
+      description: "Filters: status, customerId, deliveryNo, deliveryDateFrom, deliveryDateTo. Sort allowlist is deliveryNo, deliveryDate, status and id."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, POSTED, REVERSED] } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: deliveryNo, in: query, schema: { type: string } }
+        - { name: deliveryDateFrom, in: query, schema: { type: string, format: date } }
+        - { name: deliveryDateTo, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: "Paged Delivery Notes."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNotePageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createDeliveryNote
+      summary: "Create a Delivery DRAFT from Stock Positions"
+      description: "Customer and currency are derived from the source positions. No official DN is allocated before post."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:CREATE"
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNoteCreateRequest' } } }
+      responses:
+        '201':
+          description: "Delivery DRAFT created."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNoteResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/IdempotencyInProgress' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/delivery-notes/{id}:
+    get:
+      operationId: getDeliveryNote
+      summary: "Read one Delivery with lineage and items"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:VIEW"
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: "Delivery detail."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNoteResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateDeliveryNote
+      summary: "Replace a Delivery DRAFT"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:CREATE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNoteUpdateRequest' } } }
+      responses:
+        '200':
+          description: "Delivery DRAFT replaced."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNoteResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/delivery-notes/{id}/post:
+    post:
+      operationId: postDeliveryNote
+      summary: "Post a Delivery and atomically consume FG stock"
+      description: "DN year comes from deliveryDate. The server snapshots the active monthly rate and computes line/header amounts."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:POST"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryCommandRequest' } } }
+      responses:
+        '200':
+          description: "Canonical POSTED Delivery."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryNoteResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/delivery-notes/{id}/reverse:
+    post:
+      operationId: reverseDeliveryNote
+      summary: "Reverse a POSTED Delivery, restore stock, and create one replacement DRAFT"
+      description: "Reject if any Return exists. Lineage is a linear acyclic predecessor/successor chain. The replacement receives no DN until posted."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:REVERSE"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryCommandRequest' } } }
+      responses:
+        '200':
+          description: "Reversed source and its single replacement DRAFT."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryReverseResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '410': { $ref: '#/components/responses/IdempotencyResultExpired' }
+        '422': { $ref: '#/components/responses/UnprocessableCommand' }
+  /api/v1/delivery-notes/{id}/events:
+    get:
+      operationId: listDeliveryEvents
+      summary: "Read append-only Delivery history"
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: "Sort allowlist is occurredAt and id."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeliveryEventPageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/delivery-notes/{id}/document.pdf:
+    get:
+      operationId: downloadDeliveryDocument
+      summary: "Stream the official Delivery PDF"
+      description: "Only POSTED or REVERSED documents are printable. Generated synchronously and never persisted."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:PRINT"
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: "Delivery PDF."
+          headers:
+            Content-Disposition: { $ref: '#/components/headers/ContentDisposition' }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content: { application/pdf: { schema: { type: string, format: binary } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CommandConflict' }
+        '429': { $ref: '#/components/responses/ReportBusy' }
+  /api/v1/debit-notes:
+    get:
+      operationId: listDebitProjection
+      summary: "List the live read-only Debit projection from POSTED Delivery lines"
+      description: "Filters: customerId, deliveryNo, sysPoNo, buyerPo, deliveryDateFrom, deliveryDateTo, currencyCode. Sort allowlist is deliveryDate, deliveryNo, lineNo and deliveryNoteItemId."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:VIEW"
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: deliveryNo, in: query, schema: { type: string } }
+        - { name: sysPoNo, in: query, schema: { type: string } }
+        - { name: buyerPo, in: query, schema: { type: string } }
+        - { name: deliveryDateFrom, in: query, schema: { type: string, format: date } }
+        - { name: deliveryDateTo, in: query, schema: { type: string, format: date } }
+        - { name: currencyCode, in: query, schema: { type: string, pattern: '^[A-Z]{3}$' } }
+      responses:
+        '200':
+          description: "Paged active Debit projection."
+          headers: { Cache-Control: { $ref: '#/components/headers/NoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DebitNotePageResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/debit-notes/export.xlsx:
+    get:
+      operationId: exportDebitProjection
+      summary: "Stream the filtered live Debit projection as XLSX"
+      description: "Uses the same filters/sort as list, rejects more than 50,000 rows, neutralizes spreadsheet formula injection, is generated synchronously, and is never persisted."
+      security: [{ bearerAuth: [] }]
+      x-required-permission: "DELIVERY:EXPORT"
+      parameters:
+        - $ref: '#/components/parameters/Sort'
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: deliveryNo, in: query, schema: { type: string } }
+        - { name: sysPoNo, in: query, schema: { type: string } }
+        - { name: buyerPo, in: query, schema: { type: string } }
+        - { name: deliveryDateFrom, in: query, schema: { type: string, format: date } }
+        - { name: deliveryDateTo, in: query, schema: { type: string, format: date } }
+        - { name: currencyCode, in: query, schema: { type: string, pattern: '^[A-Z]{3}$' } }
+      responses:
+        '200':
+          description: "Debit XLSX."
+          headers:
+            Content-Disposition: { $ref: '#/components/headers/ContentDisposition' }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/ReportLimitExceeded' }
+        '429': { $ref: '#/components/responses/ReportBusy' }
 components:
   securitySchemes:
     bearerAuth:
@@ -1730,7 +2455,20 @@ components:
       in: cookie
       name: ERP_REFRESH
       description: "Rotating opaque refresh token. Secure HttpOnly SameSite=Strict and scoped to /api/v1/auth. Only its hash is stored server-side."
+  headers:
+    NoStore:
+      description: "Always no-store for protected transaction and report responses."
+      schema: { type: string, enum: [no-store] }
+    ContentDisposition:
+      description: "Attachment filename sanitized by the server; no client-controlled path or markup."
+      schema: { type: string }
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: "Opaque client retry key, scoped by actor, method, and normalized path. The request hash includes body and If-Match. Retained for 24 hours."
+      schema: { type: string, minLength: 1, maxLength: 120 }
     Page:
       name: page
       in: query
@@ -1817,6 +2555,40 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/ProblemDetail' }
+    CommandConflict:
+      description: "VERSION_CONFLICT, IDEMPOTENCY_IN_PROGRESS, invalid transition, downstream activity, stock conflict, or another stable command conflict."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    IdempotencyInProgress:
+      description: "An execution with this scoped key and request hash is active."
+      headers:
+        Retry-After: { schema: { type: integer, enum: [2] } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    IdempotencyResultExpired:
+      description: "A quarantined legacy same-hash result cannot be replayed until its record is purged."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    UnprocessableCommand:
+      description: "IDEMPOTENCY_KEY_REUSED or another semantically invalid command."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    ReportLimitExceeded:
+      description: "REPORT_LIMIT_EXCEEDED before report generation begins."
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    ReportBusy:
+      description: "Both report generation slots are occupied on this single backend instance."
+      headers:
+        Retry-After: { schema: { type: integer, enum: [5] } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
   schemas:
     DecimalQuantity:
       type: string
@@ -1844,7 +2616,44 @@ components:
         status: { type: integer }
         detail: { type: string }
         instance: { type: string }
-        code: { type: string, description: "Stable machine-readable error code." }
+        code:
+          type: string
+          description: "Stable machine-readable error code."
+          enum:
+            - INVALID_REQUEST
+            - VALIDATION_FAILED
+            - UNAUTHENTICATED
+            - CSRF_INVALID
+            - REFRESH_REAUTH_REQUIRED
+            - PASSWORD_CHANGE_REQUIRED
+            - FORBIDDEN
+            - NOT_FOUND
+            - VERSION_CONFLICT
+            - DUPLICATE_BUSINESS_KEY
+            - MASTER_IN_USE
+            - RECOVERY_ADMIN_REQUIRED
+            - EXCHANGE_RATE_MISSING
+            - RATE_LIMITED
+            - INTERNAL_ERROR
+            - IF_MATCH_REQUIRED
+            - INVALID_IF_MATCH
+            - IDEMPOTENCY_KEY_REQUIRED
+            - INVALID_IDEMPOTENCY_KEY
+            - IDEMPOTENCY_KEY_REUSED
+            - IDEMPOTENCY_IN_PROGRESS
+            - IDEMPOTENCY_RESULT_EXPIRED
+            - INVALID_STATE_TRANSITION
+            - DOWNSTREAM_ACTIVITY_EXISTS
+            - GROUP_MEMBERSHIP_INVALID
+            - PRODUCTION_ALREADY_FINISHED
+            - INSUFFICIENT_STOCK
+            - DELIVERY_ALREADY_POSTED
+            - DELIVERY_ALREADY_REVERSED
+            - DELIVERY_HAS_RETURNS
+            - RETURN_LIMIT_EXCEEDED
+            - DISPOSAL_EXCEEDS_STOCK
+            - REPORT_LIMIT_EXCEEDED
+            - REPORT_BUSY
         traceId: { type: string }
         fieldErrors:
           type: array
@@ -2430,6 +3239,586 @@ components:
         currencyCode: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    DecimalAmount:
+      type: string
+      pattern: '^\d{1,16}(\.\d{1,2})?$'
+      description: "Non-negative monetary amount, computed and returned by the server."
+    DecimalPercent:
+      type: string
+      pattern: '^(100(\.0{1,4})?|([0-9]|[1-9][0-9])(\.\d{1,4})?)$'
+      description: "Percentage from zero through one hundred, with up to four decimal places."
+    BuyerOrderItemRequest:
+      oneOf:
+        - $ref: '#/components/schemas/StandardBuyerOrderItemRequest'
+        - $ref: '#/components/schemas/CustomBuyerOrderItemRequest'
+      discriminator:
+        propertyName: isCustom
+        mapping:
+          'false': '#/components/schemas/StandardBuyerOrderItemRequest'
+          'true': '#/components/schemas/CustomBuyerOrderItemRequest'
+    StandardBuyerOrderItemRequest:
+      type: object
+      additionalProperties: false
+      required: [isCustom, finishedGoodId, orderQty, unitPrice]
+      description: "Standard line. Product and UOM snapshots derive from the referenced ACTIVE Finished Good; currency derives from the Buyer Order Customer's mandatory currency. Optional Finished Good reference price/currency never overrides the Customer currency, and clients cannot supply snapshots."
+      properties:
+        isCustom: { type: boolean, const: false }
+        finishedGoodId: { type: string, format: uuid }
+        orderQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
+        remark: { type: string }
+    CustomBuyerOrderItemRequest:
+      type: object
+      additionalProperties: false
+      required: [isCustom, productKind, styleNo, name, uomId, orderQty, unitPrice, currencyCode]
+      description: "Custom line. It has no Finished Good reference and carries the canonical product/UOM/currency values to snapshot."
+      properties:
+        isCustom: { type: boolean, const: true }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        size: { type: string }
+        color: { type: string }
+        uomId: { type: string, format: uuid }
+        orderQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
+        currencyCode: { type: string, pattern: '^[A-Z]{3}$' }
+        remark: { type: string }
+    BuyerOrderCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [orderType, customerId, picSource, picName, buyerPo, poDate, deliveryDate, items]
+      properties:
+        orderType: { type: string, minLength: 1 }
+        customerId: { type: string, format: uuid }
+        customerContactId: { type: string, format: uuid }
+        picSource: { type: string, enum: [MASTER, CUSTOM] }
+        picName: { type: string, minLength: 1 }
+        buyerPo: { type: string, minLength: 1 }
+        poDate: { type: string, format: date }
+        deliveryDate: { type: string, format: date }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/BuyerOrderItemRequest' }
+    BuyerOrderUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [orderType, customerId, picSource, picName, buyerPo, poDate, deliveryDate, items]
+      properties:
+        orderType: { type: string, minLength: 1 }
+        customerId: { type: string, format: uuid }
+        customerContactId: { type: string, format: uuid }
+        picSource: { type: string, enum: [MASTER, CUSTOM] }
+        picName: { type: string, minLength: 1 }
+        buyerPo: { type: string, minLength: 1 }
+        poDate: { type: string, format: date }
+        deliveryDate: { type: string, format: date }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/BuyerOrderItemRequest' }
+    BuyerOrderCopyRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        poDate: { type: string, format: date }
+        deliveryDate: { type: string, format: date }
+        buyerPo: { type: string }
+        reason: { type: string }
+    BuyerOrderCommandRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1 }
+    BuyerOrderItemResponse:
+      type: object
+      additionalProperties: false
+      required: [id, lineNo, activeRevision, isCustom, productKind, styleNo, name, uomId, uomCode, orderQty, productionQty, useStockQty, unitPrice, currencyCode, amount]
+      properties:
+        id: { type: string, format: uuid }
+        lineNo: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 1 }
+        activeRevision: { type: boolean }
+        status: { type: string, enum: [ACTIVE, CANCELLED] }
+        isCustom: { type: boolean }
+        finishedGoodId: { type: string, format: uuid }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string }
+        name: { type: string }
+        size: { type: string }
+        color: { type: string }
+        uomId: { type: string, format: uuid }
+        uomCode: { type: string }
+        orderQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        useStockQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        productionQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
+        currencyCode: { type: string }
+        amount: { $ref: '#/components/schemas/DecimalAmount' }
+        remark: { type: string }
+    BuyerOrderResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, sysPoNo, revision, status, orderType, customerId, customerName, customerShortName, picSource, picName, buyerPo, poDate, deliveryDate, items, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        sysPoNo: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { type: string, enum: [STANDBY, CONFIRMED] }
+        orderType: { type: string }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        customerShortName: { type: string }
+        customerContactId: { type: string, format: uuid }
+        picSource: { type: string, enum: [MASTER, CUSTOM] }
+        picName: { type: string }
+        buyerPo: { type: string }
+        poDate: { type: string, format: date }
+        deliveryDate: { type: string, format: date }
+        items: { type: array, items: { $ref: '#/components/schemas/BuyerOrderItemResponse' } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    BuyerOrderConfirmResponse:
+      type: object
+      additionalProperties: false
+      required: [buyerOrder, productionOrders]
+      properties:
+        buyerOrder: { $ref: '#/components/schemas/BuyerOrderResponse' }
+        productionOrders: { type: array, items: { $ref: '#/components/schemas/ProductionOrderResponse' } }
+    ProductionGroupMemberRequest:
+      type: object
+      additionalProperties: false
+      required: [productionOrderId, expectedVersion]
+      properties:
+        productionOrderId: { type: string, format: uuid }
+        expectedVersion: { type: integer, minimum: 0 }
+    ProductionGroupCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [members]
+      properties:
+        members:
+          type: array
+          minItems: 2
+          maxItems: 50
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ProductionGroupMemberRequest' }
+        reason: { type: string }
+    ProductionProcessRequest:
+      type: object
+      additionalProperties: false
+      required: [processId, sequenceNo]
+      properties:
+        processId: { type: string, format: uuid }
+        sequenceNo: { type: integer, minimum: 1 }
+        speed: { $ref: '#/components/schemas/DecimalQuantity' }
+    ProductionYarnLineRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        yarn: { type: string }
+        yarnCode: { type: string }
+        denier: { type: string }
+    ProductionConfigurationRequest:
+      type: object
+      additionalProperties: false
+      required: [productKind, processes, yarnLines]
+      properties:
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        materialSource: { type: string, enum: [STOCK, PURCHASE] }
+        orderKind: { type: string, enum: [LAYOUT, SAMPLE, NEW_ORDER, REPEAT_ORDER, SECOND_PRODUCTION] }
+        bim: { type: string, enum: [WHITE, BLACK, 100D, 75D, 50D] }
+        tenDia: { type: string }
+        matDo: { type: string }
+        pick: { type: string }
+        xNgangMm: { $ref: '#/components/schemas/DecimalQuantity' }
+        yDocMm: { $ref: '#/components/schemas/DecimalQuantity' }
+        haiDaMm: { $ref: '#/components/schemas/DecimalQuantity' }
+        logoXMm: { $ref: '#/components/schemas/DecimalQuantity' }
+        logoYMm: { $ref: '#/components/schemas/DecimalQuantity' }
+        hoPercent: { $ref: '#/components/schemas/DecimalPercent' }
+        weaveTypes: { type: array, uniqueItems: true, items: { type: string, enum: [THUONG, HAI_DA, SATIN, SATIN_HAI_DA] } }
+        processes:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ProductionProcessRequest' }
+        yarnLines:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ProductionYarnLineRequest' }
+        remark: { type: string }
+    ProductionCommandRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+    ProductionEventResponse:
+      type: object
+      additionalProperties: false
+      required: [id, eventType, actorUserId, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        eventType: { type: string, enum: [CREATED, GROUPED, UNGROUPED, CONFIGURED, FINISHED, CANCELLED] }
+        actorUserId: { type: string, format: uuid }
+        reason: { type: string }
+        occurredAt: { type: string, format: date-time }
+    ProductionOrderResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, productionNo, productNo, qrValue, buyerOrderId, buyerOrderItemId, productKind, plannedQty, status, configuration, events, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        productionNo: { type: string }
+        productNo: { type: string }
+        qrValue: { type: string }
+        groupId: { type: string, format: uuid }
+        groupNo: { type: string }
+        buyerOrderId: { type: string, format: uuid }
+        buyerOrderItemId: { type: string, format: uuid }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        plannedQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        producedQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        status: { type: string, enum: [OPEN, FINISHED, CANCELLED] }
+        configuration: { $ref: '#/components/schemas/ProductionConfigurationRequest' }
+        events: { type: array, items: { $ref: '#/components/schemas/ProductionEventResponse' } }
+        finishedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ProductionGroupResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, groupNo, buyerOrderId, members]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        groupNo: { type: string }
+        buyerOrderId: { type: string, format: uuid }
+        members: { type: array, items: { $ref: '#/components/schemas/ProductionOrderResponse' } }
+    ProductionFinishResponse:
+      type: object
+      additionalProperties: false
+      required: [productionOrder, stockPosition]
+      properties:
+        productionOrder: { $ref: '#/components/schemas/ProductionOrderResponse' }
+        stockPosition: { $ref: '#/components/schemas/StockPositionResponse' }
+    StockPositionResponse:
+      type: object
+      additionalProperties: false
+      required: [id, version, productionOrderId, buyerOrderItemId, customerId, currencyCode, uomCode, orderQty, producedQty, deliveredQty, returnedQty, disposedQty, currentQty, orderBalanceQty, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        productionOrderId: { type: string, format: uuid }
+        buyerOrderItemId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        currencyCode: { type: string }
+        uomCode: { type: string }
+        orderQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        producedQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        deliveredQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        returnedQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        disposedQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        currentQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        orderBalanceQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        updatedAt: { type: string, format: date-time }
+    StockMovementResponse:
+      type: object
+      additionalProperties: false
+      required: [id, movementType, quantitySigned, balanceAfter, businessDate, sourceType, sourceId, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        movementType: { type: string, enum: [PRODUCTION, DELIVERY, DELIVERY_REVERSAL, RETURN, DISPOSE] }
+        quantitySigned: { type: string, pattern: '^-?\d{1,14}(\.\d{1,4})?$' }
+        balanceAfter: { $ref: '#/components/schemas/DecimalQuantity' }
+        businessDate: { type: string, format: date }
+        sourceType: { type: string }
+        sourceId: { type: string, format: uuid }
+        sourceItemId: { type: string, format: uuid }
+        reason: { type: string }
+        occurredAt: { type: string, format: date-time }
+    EligibleReturnSourceResponse:
+      type: object
+      additionalProperties: false
+      required: [deliveryNoteItemId, deliveryNo, deliveryDate, deliveredQty, netReturnableQty, uomCode]
+      properties:
+        deliveryNoteItemId: { type: string, format: uuid }
+        deliveryNo: { type: string }
+        deliveryDate: { type: string, format: date }
+        deliveredQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        netReturnableQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        uomCode: { type: string }
+    StockReturnRequest:
+      type: object
+      additionalProperties: false
+      required: [deliveryNoteItemId, quantity, businessDate, reason]
+      properties:
+        deliveryNoteItemId: { type: string, format: uuid }
+        quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        businessDate: { type: string, format: date }
+        reason: { type: string, minLength: 1 }
+    StockDisposalRequest:
+      type: object
+      additionalProperties: false
+      required: [quantity, businessDate, reason]
+      properties:
+        quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        businessDate: { type: string, format: date }
+        reason: { type: string, minLength: 1 }
+    StockCommandResponse:
+      type: object
+      additionalProperties: false
+      required: [stockPosition, movement]
+      properties:
+        stockPosition: { $ref: '#/components/schemas/StockPositionResponse' }
+        movement: { $ref: '#/components/schemas/StockMovementResponse' }
+    DeliverySourceResponse:
+      type: object
+      additionalProperties: false
+      required: [stockPositionId, buyerOrderId, buyerOrderItemId, productionOrderId, customerId, currencyCode, availableQty, uomCode, sysPoNo, buyerPo]
+      properties:
+        stockPositionId: { type: string, format: uuid }
+        buyerOrderId: { type: string, format: uuid }
+        buyerOrderItemId: { type: string, format: uuid }
+        productionOrderId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        currencyCode: { type: string }
+        availableQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        uomCode: { type: string }
+        sysPoNo: { type: string }
+        buyerPo: { type: string }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string }
+        name: { type: string }
+        size: { type: string }
+        color: { type: string }
+    DeliveryNoteItemRequest:
+      type: object
+      additionalProperties: false
+      required: [stockPositionId, deliveryQty, unitPrice]
+      properties:
+        stockPositionId: { type: string, format: uuid }
+        deliveryQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
+    DeliveryNoteCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [deliveryDate, vatPercent, items]
+      properties:
+        deliveryDate: { type: string, format: date }
+        vatPercent: { $ref: '#/components/schemas/DecimalPercent' }
+        remark: { type: string }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/DeliveryNoteItemRequest' }
+    DeliveryNoteUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [deliveryDate, vatPercent, items]
+      properties:
+        deliveryDate: { type: string, format: date }
+        vatPercent: { $ref: '#/components/schemas/DecimalPercent' }
+        remark: { type: string }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/DeliveryNoteItemRequest' }
+    DeliveryCommandRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1 }
+    DeliveryNoteItemResponse:
+      type: object
+      additionalProperties: false
+      required: [id, lineNo, stockPositionId, deliveryQty, unitPrice, amount, currencyCode, uomCode]
+      properties:
+        id: { type: string, format: uuid }
+        lineNo: { type: integer, minimum: 1 }
+        stockPositionId: { type: string, format: uuid }
+        buyerOrderId: { type: string, format: uuid }
+        buyerOrderItemId: { type: string, format: uuid }
+        productionOrderId: { type: string, format: uuid }
+        sysPoNo: { type: string }
+        buyerPo: { type: string }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string }
+        name: { type: string }
+        size: { type: string }
+        color: { type: string }
+        uomCode: { type: string }
+        currencyCode: { type: string }
+        deliveryQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
+        amount: { $ref: '#/components/schemas/DecimalAmount' }
+    DeliveryEventResponse:
+      type: object
+      additionalProperties: false
+      required: [id, eventType, actorUserId, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        eventType: { type: string, enum: [CREATED, UPDATED_DRAFT, POSTED, REVERSED, REPLACED] }
+        actorUserId: { type: string, format: uuid }
+        reason: { type: string }
+        occurredAt: { type: string, format: date-time }
+    DeliveryNoteResponse:
+      type: object
+      additionalProperties: false
+      description: "Replacement lineage is a linear acyclic chain. A Delivery has at most one predecessor and one successor; one predecessor cannot produce multiple replacement drafts."
+      required: [id, version, customerId, customerName, deliveryDate, currencyCode, vatPercent, totalQty, totalAmount, status, items, events, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        deliveryNo: { type: string }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        customerAddress: { type: string }
+        deliveryDate: { type: string, format: date }
+        currencyCode: { type: string }
+        vndUsdRate: { $ref: '#/components/schemas/DecimalRate' }
+        wonUsdRate: { $ref: '#/components/schemas/DecimalRate' }
+        vatPercent: { $ref: '#/components/schemas/DecimalPercent' }
+        totalQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        totalAmount: { $ref: '#/components/schemas/DecimalAmount' }
+        status: { type: string, enum: [DRAFT, POSTED, REVERSED] }
+        replacesDeliveryId: { type: string, format: uuid }
+        replacementDeliveryId: { type: string, format: uuid }
+        remark: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/DeliveryNoteItemResponse' } }
+        events: { type: array, items: { $ref: '#/components/schemas/DeliveryEventResponse' } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    DeliveryReverseResponse:
+      type: object
+      additionalProperties: false
+      required: [reversedDelivery, replacementDraft]
+      properties:
+        reversedDelivery: { $ref: '#/components/schemas/DeliveryNoteResponse' }
+        replacementDraft: { $ref: '#/components/schemas/DeliveryNoteResponse' }
+    DebitNoteResponse:
+      type: object
+      additionalProperties: false
+      required: [deliveryNoteItemId, debitReference, deliveryNoteId, deliveryNo, deliveryDate, customerId, customerName, lineNo, totalQty, unitPrice, amount, currencyCode]
+      properties:
+        deliveryNoteItemId: { type: string, format: uuid }
+        debitReference: { type: string }
+        deliveryNoteId: { type: string, format: uuid }
+        deliveryNo: { type: string }
+        deliveryDate: { type: string, format: date }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        lineNo: { type: integer, minimum: 1 }
+        sysPoNo: { type: string }
+        buyerPo: { type: string }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        styleNo: { type: string }
+        name: { type: string }
+        size: { type: string }
+        color: { type: string }
+        uomCode: { type: string }
+        totalQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        unitPrice: { $ref: '#/components/schemas/DecimalPrice' }
+        amount: { $ref: '#/components/schemas/DecimalAmount' }
+        currencyCode: { type: string }
+    BuyerOrderPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/BuyerOrderResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    ProductionOrderPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ProductionOrderResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    ProductionEventPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ProductionEventResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    StockPositionPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/StockPositionResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    StockMovementPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/StockMovementResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    EligibleReturnSourcePageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/EligibleReturnSourceResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    DeliverySourcePageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DeliverySourceResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    DeliveryNotePageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DeliveryNoteResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    DeliveryEventPageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DeliveryEventResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
+    DebitNotePageResponse:
+      type: object
+      additionalProperties: false
+      required: [items, page, filters, sort]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DebitNoteResponse' } }
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: { $ref: '#/components/schemas/AppliedFilters' }
+        sort: { $ref: '#/components/schemas/AppliedSort' }
     SessionPageResponse:
       type: object
       additionalProperties: false

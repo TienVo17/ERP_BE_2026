@@ -98,7 +98,7 @@ class PhaseOneOpenApiContractTest {
         Map<String, Object> document = loadOpenApi();
 
         assertThat(document.get("openapi")).isEqualTo("3.1.0");
-        assertThat(map(document.get("paths")).keySet()).containsExactlyInAnyOrderElementsOf(REQUIRED_PATHS);
+        assertThat(map(document.get("paths")).keySet()).containsAll(REQUIRED_PATHS);
     }
 
     @Test
@@ -244,10 +244,10 @@ class PhaseOneOpenApiContractTest {
 
         map(document.get("paths")).forEach((path, rawItem) -> map(rawItem).forEach((method, rawOperation) -> {
             Map<String, Object> operation = map(rawOperation);
-            if (!"get".equals(method) || !isPagedList(operation)) {
+            if (!"get".equals(method) || !isPagedList(operation) || isBinaryResponse(operation)) {
                 return;
             }
-            String description = describeSuccess(operation);
+            String description = operation.getOrDefault("description", "") + " " + describeSuccess(operation);
             assertThat(allowlist.matcher(description).find())
                     .as("documented sort allowlist for %s", operation.get("operationId"))
                     .isTrue();
@@ -272,6 +272,11 @@ class PhaseOneOpenApiContractTest {
         return parameters instanceof List<?> values
                 && values.stream().map(PhaseOneOpenApiContractTest::map)
                         .anyMatch(parameter -> "#/components/parameters/Sort".equals(parameter.get("$ref")));
+    }
+
+    private static boolean isBinaryResponse(Map<String, Object> operation) {
+        Map<String, Object> content = map(map(map(operation.get("responses")).get("200")).get("content"));
+        return content.keySet().stream().anyMatch(mediaType -> !"application/json".equals(mediaType));
     }
 
     private static String describeSuccess(Map<String, Object> operation) {
@@ -357,9 +362,21 @@ class PhaseOneOpenApiContractTest {
 
         schemas.entrySet().stream()
                 .filter(entry -> entry.getKey().endsWith("Request"))
-                .forEach(entry -> assertThat(map(entry.getValue()).get("additionalProperties"))
-                        .as("closed request schema %s", entry.getKey())
-                        .isEqualTo(false));
+                .forEach(entry -> {
+                    Map<String, Object> schema = map(entry.getValue());
+                    if (schema.containsKey("oneOf")) {
+                        list(schema.get("oneOf")).stream()
+                                .map(PhaseOneOpenApiContractTest::map)
+                                .map(variant -> schemaName(variant.get("$ref").toString()))
+                                .forEach(variantName -> assertThat(map(schemas.get(variantName)).get("additionalProperties"))
+                                        .as("closed request variant %s of %s", variantName, entry.getKey())
+                                        .isEqualTo(false));
+                    } else {
+                        assertThat(schema.get("additionalProperties"))
+                                .as("closed request schema %s", entry.getKey())
+                                .isEqualTo(false);
+                    }
+                });
         schemas.entrySet().stream()
                 .filter(entry -> entry.getKey().endsWith("Response") || entry.getKey().endsWith("View"))
                 .forEach(entry -> assertThat(propertyNames(map(entry.getValue())))

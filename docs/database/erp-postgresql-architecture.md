@@ -149,8 +149,8 @@ Posted/Reversed data không hard-delete.
 
 - Lock Buyer Order và related Production Orders.
 - Reject nếu group, finish, stock position/movement hoặc Delivery tồn tại.
-- Remove/cancel only auto-created open Production records theo retention implementation.
-- Transition về `STANDBY`; append audit.
+- Không xóa item/Production history. Forward migration bổ sung revision/cancellation state; confirmed items và OPEN Production cũ chuyển `CANCELLED`, rồi tạo active revision editable để confirm lại.
+- Giữ nguyên SYS PO identity, tăng version/revision, append audit.
 
 ### Finish Production
 
@@ -317,6 +317,14 @@ Schema hiện được quản lý bằng Flyway tại `src/main/resources/db/mig
 - [Operational Core v1 — Phase 1 source of truth](../operational-core-v1-spec.md)
 - [API v1 OpenAPI contract](../api/erp-v1-openapi.yaml)
 - [Authentication and authorization](../security/authentication-and-authorization.md)
+
+## F/G application contract status
+
+The transaction API contract is now frozen over immutable V001–V014. No applied migration is edited. V015 will add the durable command/idempotency lease fence, history-preserving Buyer Order revision/cancellation fields, server-owned Production group allocation support, and least-privilege runtime grants including bounded idempotency cleanup. V016 later adds Delivery replacement-lineage guards after Delivery application behavior is green. Every created object receives explicit runtime grants because older grants are not inherited.
+
+Application commands keep `READ COMMITTED`, take the existing V012/V013 global transaction advisory coordination before guarded relationship writes, and acquire aggregate/Stock UUID row locks in ascending order. Expected domain failures are stored only after rolling back to an execution savepoint; unexpected SQL/commit failures roll back and are never replayed as public 4xx. Stock movements store the internal command UUID/scope digest rather than the raw client key.
+
+Production and Delivery PDFs plus Debit XLSX are generated synchronously, streamed, and never persisted. A bounded per-instance admission guard permits two concurrent reports; the third returns `REPORT_BUSY`. Debit export uses the live POSTED Delivery projection and a 50,000-row cap.
 
 ## Phase 1 auth/session extension status
 
