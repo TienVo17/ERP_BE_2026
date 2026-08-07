@@ -32,10 +32,11 @@ class MigrationImmutabilityTest {
         BASELINE_HASHES.put("V013__guard_finished_good_usage.sql", "7789ced915f9175398e44729ae0afaeb9094c1808387fb0c0446b5cf9f74031c");
         BASELINE_HASHES.put("V014__grant_runtime_authority_deletes.sql", "a66bb678fe65382027c3bcb5a6db113c64b82a28500c6220ab7cfd039622d482");
         BASELINE_HASHES.put("V015__add_transaction_command_foundation.sql", "08a87ea649b9e971cc3740dabf67459534b1459bb3a42058a919da1fc6accb73");
+        BASELINE_HASHES.put("V016__harden_production_group_and_stock_ledger.sql", "c314c6eca6ef3c9bb0e99c6a92d9d7216b5fcb71d15207fb266f4ab4318c60f1");
     }
 
     @Test
-    void preservesV001ThroughV015ByteForByte() throws Exception {
+    void preservesV001ThroughV016ByteForByte() throws Exception {
         for (Map.Entry<String, String> migration : BASELINE_HASHES.entrySet()) {
             assertThat(hash("db/migration/" + migration.getKey()))
                     .as(migration.getKey())

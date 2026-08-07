@@ -55,7 +55,7 @@ class DatabaseUpgradeIT {
                 }
             }
             assertThat(count(postgres, "sales.buyer_order", buyerOrderId)).isOne();
-            assertThat(currentVersion(postgres)).isEqualTo("016");
+            assertThat(currentVersion(postgres)).isEqualTo("017");
         }
     }
 
@@ -99,7 +99,7 @@ class DatabaseUpgradeIT {
                 assertThat(result.next()).isTrue();
                 assertThat(result.getLong(1)).isZero();
             }
-            assertThat(currentVersion(postgres)).isEqualTo("016");
+            assertThat(currentVersion(postgres)).isEqualTo("017");
         }
     }
 
@@ -118,7 +118,7 @@ class DatabaseUpgradeIT {
 
             migrateToLatest(postgres);
 
-            assertThat(currentVersion(postgres)).isEqualTo("016");
+            assertThat(currentVersion(postgres)).isEqualTo("017");
             try (Connection connection = connection(postgres);
                     var statement = connection.prepareStatement("""
                             SELECT movement_sequence
@@ -172,7 +172,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("016");
+            assertThat(currentVersion(postgres)).isEqualTo("017");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -284,7 +284,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("016");
+            assertThat(currentVersion(postgres)).isEqualTo("017");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
