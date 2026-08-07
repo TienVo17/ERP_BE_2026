@@ -3408,7 +3408,7 @@ components:
           maxItems: 50
           uniqueItems: true
           items: { $ref: '#/components/schemas/ProductionGroupMemberRequest' }
-        reason: { type: string }
+        reason: { type: string, maxLength: 200 }
     ProductionProcessRequest:
       type: object
       additionalProperties: false
@@ -3421,9 +3421,9 @@ components:
       type: object
       additionalProperties: false
       properties:
-        yarn: { type: string }
-        yarnCode: { type: string }
-        denier: { type: string }
+        yarn: { type: string, maxLength: 120 }
+        yarnCode: { type: string, maxLength: 120 }
+        denier: { type: string, maxLength: 120 }
     ProductionConfigurationRequest:
       type: object
       additionalProperties: false
@@ -3433,9 +3433,9 @@ components:
         materialSource: { type: string, enum: [STOCK, PURCHASE] }
         orderKind: { type: string, enum: [LAYOUT, SAMPLE, NEW_ORDER, REPEAT_ORDER, SECOND_PRODUCTION] }
         bim: { type: string, enum: [WHITE, BLACK, 100D, 75D, 50D] }
-        tenDia: { type: string }
-        matDo: { type: string }
-        pick: { type: string }
+        tenDia: { type: string, maxLength: 120 }
+        matDo: { type: string, maxLength: 120 }
+        pick: { type: string, maxLength: 120 }
         xNgangMm: { $ref: '#/components/schemas/DecimalQuantity' }
         yDocMm: { $ref: '#/components/schemas/DecimalQuantity' }
         haiDaMm: { $ref: '#/components/schemas/DecimalQuantity' }
@@ -3451,12 +3451,12 @@ components:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/ProductionYarnLineRequest' }
-        remark: { type: string }
+        remark: { type: string, maxLength: 200 }
     ProductionCommandRequest:
       type: object
       additionalProperties: false
       properties:
-        reason: { type: string }
+        reason: { type: string, maxLength: 200 }
     ProductionEventResponse:
       type: object
       additionalProperties: false
@@ -3490,6 +3490,23 @@ components:
         finishedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    ProductionGroupMemberResponse:
+      type: object
+      additionalProperties: false
+      description: "Compact group membership projection. Full configuration and event history remain available from the Production Order detail endpoint, keeping 50-member command responses within the idempotency replay limit."
+      required: [id, version, productionNo, productNo, buyerOrderId, buyerOrderItemId, productKind, plannedQty, status]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 0 }
+        productionNo: { type: string }
+        productNo: { type: string }
+        groupId: { type: string, format: uuid }
+        groupNo: { type: string }
+        buyerOrderId: { type: string, format: uuid }
+        buyerOrderItemId: { type: string, format: uuid }
+        productKind: { type: string, enum: [PRINT, WOVEN] }
+        plannedQty: { $ref: '#/components/schemas/DecimalQuantity' }
+        status: { type: string, enum: [OPEN, FINISHED, CANCELLED] }
     ProductionGroupResponse:
       type: object
       additionalProperties: false
@@ -3499,7 +3516,7 @@ components:
         version: { type: integer, minimum: 0 }
         groupNo: { type: string }
         buyerOrderId: { type: string, format: uuid }
-        members: { type: array, items: { $ref: '#/components/schemas/ProductionOrderResponse' } }
+        members: { type: array, items: { $ref: '#/components/schemas/ProductionGroupMemberResponse' } }
     ProductionFinishResponse:
       type: object
       additionalProperties: false
@@ -3561,7 +3578,7 @@ components:
         deliveryNoteItemId: { type: string, format: uuid }
         quantity: { $ref: '#/components/schemas/DecimalQuantity' }
         businessDate: { type: string, format: date }
-        reason: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
     StockDisposalRequest:
       type: object
       additionalProperties: false
@@ -3569,7 +3586,7 @@ components:
       properties:
         quantity: { $ref: '#/components/schemas/DecimalQuantity' }
         businessDate: { type: string, format: date }
-        reason: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
     StockCommandResponse:
       type: object
       additionalProperties: false

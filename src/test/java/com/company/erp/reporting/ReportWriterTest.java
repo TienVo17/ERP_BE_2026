@@ -30,6 +30,51 @@ class ReportWriterTest {
     }
 
     @Test
+    void paginatesLongPdfContentWithoutDroppingTheLastLine() throws Exception {
+        PdfDocumentWriter writer = new PdfDocumentWriter();
+        List<String> lines = java.util.stream.IntStream.rangeClosed(1, 100)
+                .mapToObj(line -> "Process row " + line)
+                .toList();
+
+        byte[] bytes = writer.write("Production PR-2032-000001", lines);
+
+        try (var document = Loader.loadPDF(bytes)) {
+            assertThat(document.getNumberOfPages()).isGreaterThan(1);
+            String text = new PDFTextStripper().getText(document);
+            assertThat(text).contains("Process row 1", "Process row 100");
+        }
+    }
+
+    @Test
+    void wrapsLongPdfTextAndNormalizesEmbeddedControls() throws Exception {
+        PdfDocumentWriter writer = new PdfDocumentWriter();
+        String longText = "Y".repeat(200) + "\n" + "Z".repeat(120) + "\tfinished";
+
+        byte[] bytes = writer.write("Production PR-2032-000001", List.of(longText));
+
+        try (var document = Loader.loadPDF(bytes)) {
+            String text = new PDFTextStripper().getText(document);
+            assertThat(text).contains("finished");
+            assertThat(document.getNumberOfPages()).isGreaterThanOrEqualTo(1);
+        }
+    }
+
+    /** The embedded font has no CJK or emoji glyphs; such text must degrade, not fail the report. */
+    @Test
+    void substitutesCharactersTheEmbeddedFontCannotEncode() throws Exception {
+        PdfDocumentWriter writer = new PdfDocumentWriter();
+
+        byte[] bytes = writer.write("Production PR-2032-000001", List.of(
+                "Remark: テスト 测试 🚀",
+                "Customer: Công ty Dệt May"));
+
+        try (var document = Loader.loadPDF(bytes)) {
+            String text = new PDFTextStripper().getText(document);
+            assertThat(text).contains("Remark:", "Công ty Dệt May");
+        }
+    }
+
+    @Test
     void producesAParseableXlsxAndNeverCreatesFormulaCellsFromUntrustedText() throws Exception {
         XlsxWorkbookWriter writer = new XlsxWorkbookWriter();
 

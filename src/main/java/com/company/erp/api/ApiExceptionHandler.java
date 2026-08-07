@@ -128,13 +128,31 @@ public class ApiExceptionHandler {
                 request), ApiErrorCode.DUPLICATE_BUSINESS_KEY.status());
     }
 
+    /**
+     * A check-constraint or append-only violation is a server-enforced invariant, not a bad value:
+     * it means a database guard caught something the application should have prevented. The response
+     * stays generic, but the failure must leave an operator signal.
+     */
     @ExceptionHandler(DataIntegrityViolationException.class)
     ResponseEntity<ProblemDetail> handleInvalidData(
             DataIntegrityViolationException exception, HttpServletRequest request) {
+        if (isServerEnforcedInvariant(exception)) {
+            LOGGER.error("Database invariant violated at {}", request.getRequestURI(), exception);
+        }
         return response(problemDetails.create(
                 ApiErrorCode.VALIDATION_FAILED,
                 "A supplied value is invalid for this resource.",
                 request), ApiErrorCode.VALIDATION_FAILED.status());
+    }
+
+    private static boolean isServerEnforcedInvariant(DataIntegrityViolationException exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLException sqlException) {
+                String state = sqlException.getSQLState();
+                return "23514".equals(state) || "55000".equals(state);
+            }
+        }
+        return false;
     }
 
     @ExceptionHandler(OptimisticLockingFailureException.class)

@@ -33,12 +33,12 @@ class DatabaseMigrationIT {
     private DataSource dataSource;
 
     @Test
-    void appliesV001ThroughV015WithTransactionCommandFoundation() {
+    void appliesV001ThroughV016WithTransactionCommandFoundation() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
 
         assertThat(Flyway.configure().dataSource(dataSource).load().info().applied())
                 .extracting(info -> info.getVersion().toString())
-                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015");
+                .containsExactly("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016");
 
         assertThat(columns(jdbc, "identity", "app_user"))
                 .contains("must_change_password", "password_generation");

@@ -124,9 +124,14 @@ public class IdempotencyJdbcRepository {
                 .update() == 1;
     }
 
-    public int deleteExpired(UUID id) {
-        return jdbc.sql("DELETE FROM system.idempotency_record WHERE id = :id AND expires_at <= clock_timestamp()")
+    /**
+     * The caller decides expiry against its own clock, so the delete must use that same instant.
+     * Falling back to the database clock lets host skew leave the row in place forever.
+     */
+    public int deleteExpired(UUID id, OffsetDateTime expiredAt) {
+        return jdbc.sql("DELETE FROM system.idempotency_record WHERE id = :id AND expires_at <= :expiredAt")
                 .param("id", id)
+                .param("expiredAt", expiredAt)
                 .update();
     }
 

@@ -199,6 +199,7 @@ public class BuyerOrderService {
     public BuyerOrderResponse reopen(
             UUID id, long version, BuyerOrderCommandRequest request, ErpPrincipal actor,
             String requestId, String commandKey) {
+        repository.coordinateGuardedReferences();
         BuyerOrderResponse before = lock(id);
         requireVersionAndState(before, version, "CONFIRMED");
         repository.lockProductionOrders(id);

@@ -15,6 +15,7 @@ import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -53,7 +54,19 @@ public class IdempotencyService {
         this.clock = clock;
     }
 
-    public CommandResponse execute(CommandRequest rawRequest, Supplier<CommandResult> command) {
+    public CommandResponse execute(CommandRequest request, Supplier<CommandResult> command) {
+        if (command == null) {
+            throw new IllegalArgumentException("Command is required");
+        }
+        return execute(request, ignored -> command.get());
+    }
+
+    public CommandResponse execute(
+            CommandRequest rawRequest,
+            Function<CommandExecution, CommandResult> command) {
+        if (command == null) {
+            throw new IllegalArgumentException("Command is required");
+        }
         CommandRequest request = normalize(rawRequest);
         Claim claim = claimTransaction.execute(status -> claim(request));
         if (claim == null) {
@@ -82,6 +95,18 @@ public class IdempotencyService {
     }
 
     private Claim claim(CommandRequest request) {
+        return claim(request, 0);
+    }
+
+    /**
+     * Retries only after purging an expired record, so one extra attempt is always enough. The bound
+     * keeps a predicate that never clears from spinning on the locked row.
+     */
+    private Claim claim(CommandRequest request, int attempt) {
+        if (attempt > 1) {
+            throw new ApiException(ApiErrorCode.IDEMPOTENCY_IN_PROGRESS,
+                    "The command could not be claimed. Retry after two seconds.", 2);
+        }
         Scope scope = scope(request);
         UUID owner = UUID.randomUUID();
         UUID commandId = UUID.randomUUID();
@@ -98,6 +123,10 @@ public class IdempotencyService {
 
         Record existing = repository.findByScopeAndKeyForUpdate(scope.text(), request.idempotencyKey())
                 .orElseThrow(() -> new IllegalStateException("Idempotency conflict disappeared"));
+        if (!existing.expiresAt().isAfter(now)) {
+            repository.deleteExpired(existing.id(), now);
+            return claim(request, attempt + 1);
+        }
         if (!MessageDigest.isEqual(
                 existing.requestHash().getBytes(StandardCharsets.UTF_8),
                 request.requestHash().getBytes(StandardCharsets.UTF_8))) {
@@ -107,13 +136,11 @@ public class IdempotencyService {
         if ("COMPLETED".equals(existing.status())) {
             return new Claim(existing.id(), null, existing.leaseGeneration(), existing.requestHash(), response(existing));
         }
+        // Expired records were already purged above, so a surviving quarantined row still holds its
+        // retention: the caller is told the result is gone rather than handed a second execution.
         if ("QUARANTINED".equals(existing.status())) {
-            if (existing.expiresAt().isAfter(now)) {
-                throw new ApiException(ApiErrorCode.IDEMPOTENCY_RESULT_EXPIRED,
-                        "The original response is no longer available for replay.");
-            }
-            repository.deleteExpired(existing.id());
-            return claim(request);
+            throw new ApiException(ApiErrorCode.IDEMPOTENCY_RESULT_EXPIRED,
+                    "The original response is no longer available for replay.");
         }
         if ("IN_PROGRESS".equals(existing.status()) && existing.leaseExpiresAt().isAfter(now)) {
             throw new ApiException(ApiErrorCode.IDEMPOTENCY_IN_PROGRESS,
@@ -129,7 +156,7 @@ public class IdempotencyService {
 
     private CommandResponse executeClaim(
             Claim claim,
-            Supplier<CommandResult> command,
+            Function<CommandExecution, CommandResult> command,
             org.springframework.transaction.TransactionStatus transactionStatus) {
         Record locked = repository.findByIdForUpdate(claim.id())
                 .orElseThrow(() -> new IllegalStateException("Idempotency claim disappeared"));
@@ -143,9 +170,24 @@ public class IdempotencyService {
             throw new ApiException(ApiErrorCode.IDEMPOTENCY_IN_PROGRESS,
                     "The command lease changed before execution.");
         }
+        if (locked.commandId() == null) {
+            throw new IllegalStateException("Idempotency claim is missing its command ID");
+        }
+        byte[] scopeDigest;
+        try {
+            scopeDigest = HexFormat.of().parseHex(locked.scope());
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("Idempotency claim has an invalid scope digest", exception);
+        }
+        if (scopeDigest.length != 32) {
+            throw new IllegalStateException("Idempotency claim has an invalid scope digest");
+        }
 
         Object savepoint = transactionStatus.createSavepoint();
-        CommandResult result = command.get();
+        CommandResult result = command.apply(new CommandExecution(locked.commandId(), scopeDigest));
+        if (result == null) {
+            throw new IllegalStateException("Command returned no result");
+        }
         if (result.terminal()) {
             transactionStatus.rollbackToSavepoint(savepoint);
         }
@@ -280,6 +322,20 @@ public class IdempotencyService {
 
         public static CommandResult terminal(CommandResponse response) {
             return new CommandResult(response, true);
+        }
+    }
+
+    public record CommandExecution(UUID commandId, byte[] scopeDigest) {
+        public CommandExecution {
+            if (commandId == null || scopeDigest == null || scopeDigest.length != 32) {
+                throw new IllegalArgumentException("Trusted command execution context is invalid");
+            }
+            scopeDigest = scopeDigest.clone();
+        }
+
+        @Override
+        public byte[] scopeDigest() {
+            return scopeDigest.clone();
         }
     }
 

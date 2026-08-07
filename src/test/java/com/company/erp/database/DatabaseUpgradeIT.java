@@ -55,7 +55,7 @@ class DatabaseUpgradeIT {
                 }
             }
             assertThat(count(postgres, "sales.buyer_order", buyerOrderId)).isOne();
-            assertThat(currentVersion(postgres)).isEqualTo("015");
+            assertThat(currentVersion(postgres)).isEqualTo("016");
         }
     }
 
@@ -99,7 +99,53 @@ class DatabaseUpgradeIT {
                 assertThat(result.next()).isTrue();
                 assertThat(result.getLong(1)).isZero();
             }
-            assertThat(currentVersion(postgres)).isEqualTo("015");
+            assertThat(currentVersion(postgres)).isEqualTo("016");
+        }
+    }
+
+    /**
+     * The stock ledger is append-only, so V016's movement_sequence backfill has to suspend that
+     * guard. An empty ledger never exercises the row trigger, so this seeds real movements first.
+     */
+    @Test
+    void backfillsMovementSequenceOnAPopulatedLedgerWithoutBreakingAppendOnly() throws Exception {
+        try (PostgreSQLContainer postgres = postgres("erp_upgrade_ledger")) {
+            postgres.start();
+            migrateToV011(postgres);
+            UUID customerId = insertCustomer(postgres, "LEDGER-CUSTOMER");
+            UUID buyerOrderId = insertBuyerOrder(postgres, customerId);
+            UUID positionId = insertFinishedStockWithMovements(postgres, buyerOrderId, customerId);
+
+            migrateToLatest(postgres);
+
+            assertThat(currentVersion(postgres)).isEqualTo("016");
+            try (Connection connection = connection(postgres);
+                    var statement = connection.prepareStatement("""
+                            SELECT movement_sequence
+                            FROM inventory.stock_movement
+                            WHERE stock_position_id = ?
+                            ORDER BY occurred_at, id
+                            """)) {
+                statement.setObject(1, positionId);
+                try (var result = statement.executeQuery()) {
+                    assertThat(result.next()).isTrue();
+                    assertThat(result.getLong(1)).isOne();
+                    assertThat(result.next()).isTrue();
+                    assertThat(result.getLong(1)).isEqualTo(2);
+                    assertThat(result.next()).isFalse();
+                }
+            }
+
+            // The guard must be active again once the migration has finished.
+            try (Connection connection = connection(postgres);
+                    var statement = connection.createStatement()) {
+                assertThatThrownBy(() -> statement.executeUpdate(
+                        "UPDATE inventory.stock_movement SET balance_after = 0 WHERE stock_position_id = '"
+                                + positionId + "'"))
+                        .isInstanceOf(SQLException.class)
+                        .extracting(error -> ((SQLException) error).getSQLState())
+                        .isEqualTo("55000");
+            }
         }
     }
 
@@ -126,7 +172,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("015");
+            assertThat(currentVersion(postgres)).isEqualTo("016");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -238,7 +284,7 @@ class DatabaseUpgradeIT {
             }
 
             migrateToLatest(postgres);
-            assertThat(currentVersion(postgres)).isEqualTo("015");
+            assertThat(currentVersion(postgres)).isEqualTo("016");
             try (Connection connection = connection(postgres);
                     var statement = connection.createStatement();
                     var result = statement.executeQuery("""
@@ -481,6 +527,110 @@ class DatabaseUpgradeIT {
                 connection.rollback();
                 throw exception;
             }
+        }
+    }
+
+    /** Seeds a FINISHED Production Order, its Stock Position and two movements at V011 shape. */
+    private static UUID insertFinishedStockWithMovements(
+            PostgreSQLContainer postgres, UUID buyerOrderId, UUID customerId) throws SQLException {
+        UUID itemId = UUID.randomUUID();
+        UUID productionId = UUID.randomUUID();
+        UUID positionId = UUID.randomUUID();
+        try (Connection connection = connection(postgres)) {
+            connection.setAutoCommit(false);
+            try {
+                try (var item = connection.prepareStatement("""
+                        INSERT INTO sales.buyer_order_item (
+                            id, buyer_order_id, line_no, is_custom, product_kind_snapshot,
+                            style_no_snapshot, name_snapshot, uom_id, uom_code_snapshot, order_qty,
+                            production_qty, unit_price, currency_code, amount, created_by, updated_by
+                        ) VALUES (?, ?, 1, true, 'PRINT', 'STYLE', 'Ledger Item',
+                                  '10000000-0000-0000-0000-000000000002', 'EA', 10, 10, 0, 'USD', 0, ?, ?)
+                        """)) {
+                    item.setObject(1, itemId);
+                    item.setObject(2, buyerOrderId);
+                    item.setObject(3, SYSTEM_USER_ID);
+                    item.setObject(4, SYSTEM_USER_ID);
+                    item.executeUpdate();
+                }
+                try (var production = connection.prepareStatement("""
+                        INSERT INTO production.production_order (
+                            id, production_no, buyer_order_item_id, buyer_order_id, product_kind_snapshot,
+                            product_no, qr_value, planned_qty, produced_qty, status, finished_at,
+                            finished_by, created_by, updated_by
+                        ) VALUES (?, ?, ?, ?, 'PRINT', 'LEDGER', ?, 10, 10, 'FINISHED',
+                                  clock_timestamp(), ?, ?, ?)
+                        """)) {
+                    production.setObject(1, productionId);
+                    production.setString(2, number("PR"));
+                    production.setObject(3, itemId);
+                    production.setObject(4, buyerOrderId);
+                    production.setString(5, "LEDGER-PRODUCTION-" + productionId);
+                    production.setObject(6, SYSTEM_USER_ID);
+                    production.setObject(7, SYSTEM_USER_ID);
+                    production.setObject(8, SYSTEM_USER_ID);
+                    production.executeUpdate();
+                }
+                try (var config = connection.prepareStatement("""
+                        INSERT INTO production.production_print_config (production_order_id, updated_by)
+                        VALUES (?, ?)
+                        """)) {
+                    config.setObject(1, productionId);
+                    config.setObject(2, SYSTEM_USER_ID);
+                    config.executeUpdate();
+                }
+                try (var position = connection.prepareStatement("""
+                        INSERT INTO inventory.stock_position (
+                            id, production_order_id, buyer_order_item_id, customer_id, currency_code,
+                            uom_id, order_qty, produced_qty, delivered_qty, returned_qty, disposed_qty,
+                            current_qty, order_balance_qty, created_by, updated_by
+                        ) VALUES (?, ?, ?, ?, 'USD', '10000000-0000-0000-0000-000000000002',
+                                  10, 10, 0, 0, 4, 6, 10, ?, ?)
+                        """)) {
+                    position.setObject(1, positionId);
+                    position.setObject(2, productionId);
+                    position.setObject(3, itemId);
+                    position.setObject(4, customerId);
+                    position.setObject(5, SYSTEM_USER_ID);
+                    position.setObject(6, SYSTEM_USER_ID);
+                    position.executeUpdate();
+                }
+                insertLegacyMovement(connection, positionId, productionId, "PRODUCTION", "10", "10",
+                        "PRODUCTION", null, "2031-01-01 00:00:00+00");
+                insertLegacyMovement(connection, positionId, positionId, "DISPOSE", "-4", "6",
+                        "STOCK_ADJUSTMENT", "ledger fixture", "2031-01-02 00:00:00+00");
+                connection.commit();
+            } catch (SQLException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        }
+        return positionId;
+    }
+
+    private static void insertLegacyMovement(
+            Connection connection, UUID positionId, UUID sourceId, String type, String quantity,
+            String balance, String sourceType, String reason, String occurredAt) throws SQLException {
+        try (var statement = connection.prepareStatement("""
+                INSERT INTO inventory.stock_movement (
+                    id, stock_position_id, movement_type, quantity_signed, balance_after,
+                    business_date, source_type, source_id, idempotency_key, reason, created_by,
+                    occurred_at
+                ) VALUES (?, ?, ?, CAST(? AS numeric), CAST(? AS numeric), DATE '2031-01-01', ?, ?, ?, ?, ?,
+                          CAST(? AS timestamptz))
+                """)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, positionId);
+            statement.setString(3, type);
+            statement.setString(4, quantity);
+            statement.setString(5, balance);
+            statement.setString(6, sourceType);
+            statement.setObject(7, sourceId);
+            statement.setString(8, "ledger-" + UUID.randomUUID());
+            statement.setString(9, reason);
+            statement.setObject(10, SYSTEM_USER_ID);
+            statement.setString(11, occurredAt);
+            statement.executeUpdate();
         }
     }
 

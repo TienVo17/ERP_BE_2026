@@ -279,6 +279,76 @@ class RuntimePrivilegeIT {
     }
 
     @Test
+    void runtimeCanAllocateGroupNumbersWithoutDirectCounterAccess() throws Exception {
+        UUID actorId = createUser("runtime-group-number");
+        UUID customerId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection()) {
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO master_data.customer (
+                        id, short_name, name, currency_code, created_by, updated_by
+                    ) VALUES (?, ?, 'Runtime Group Customer', 'USD', ?, ?)
+                    """)) {
+                statement.setObject(1, customerId);
+                statement.setString(2, "RUNTIME-GROUP-" + customerId);
+                statement.setObject(3, actorId);
+                statement.setObject(4, actorId);
+                statement.executeUpdate();
+            }
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO sales.buyer_order (
+                        id, sys_po_no, order_type, customer_id, customer_name_snapshot,
+                        customer_short_name_snapshot, pic_source, pic_name_snapshot,
+                        buyer_po, po_date, delivery_date, created_by, updated_by
+                    ) VALUES (?, ?, 'STANDARD', ?, 'Runtime Group Customer', 'RUNTIME',
+                        'CUSTOM', 'PIC', 'PO', CURRENT_DATE, CURRENT_DATE, ?, ?)
+                    """)) {
+                statement.setObject(1, orderId);
+                statement.setString(2, "SO-2026-%06d".formatted(Math.floorMod(orderId.hashCode(), 1_000_000)));
+                statement.setObject(3, customerId);
+                statement.setObject(4, actorId);
+                statement.setObject(5, actorId);
+                statement.executeUpdate();
+            }
+        }
+
+        asRuntime(connection -> {
+            try (var statement = connection.prepareStatement(
+                    "SELECT production.next_production_group_no(?)")) {
+                statement.setObject(1, orderId);
+                try (ResultSet result = statement.executeQuery()) {
+                    assertThat(result.next()).isTrue();
+                    assertThat(result.getString(1)).endsWith("-001");
+                }
+            }
+        });
+        assertThatThrownBy(() -> asRuntime(connection -> {
+            try (var statement = connection.prepareStatement("""
+                    UPDATE production.production_group_number_counter
+                    SET last_suffix = 999
+                    WHERE buyer_order_id = ?
+                    """)) {
+                statement.setObject(1, orderId);
+                statement.executeUpdate();
+            }
+        })).isInstanceOf(SQLException.class)
+                .satisfies(error -> assertThat(((SQLException) error).getSQLState()).isEqualTo("42501"));
+    }
+
+    /**
+     * Production events and stock movements are the transaction ledger. The runtime appends to them
+     * and may never rewrite history, so the grant itself has to withhold UPDATE and DELETE.
+     */
+    @Test
+    void runtimeRoleCannotRewriteProductionOrStockHistory() {
+        assertMutationDenied("UPDATE production.production_event SET event_type = 'FINISHED' WHERE reason = 'never'");
+        assertMutationDenied("DELETE FROM production.production_event WHERE reason = 'never'");
+        assertMutationDenied("UPDATE inventory.stock_movement SET quantity_signed = 1 WHERE reason = 'never'");
+        assertMutationDenied("DELETE FROM inventory.stock_movement WHERE reason = 'never'");
+        assertMutationDenied("UPDATE inventory.stock_movement SET movement_sequence = 1 WHERE reason = 'never'");
+    }
+
+    @Test
     void runtimeRoleStillCannotDeleteIdentitiesOrTheirHistory() {
         assertMutationDenied("DELETE FROM identity.app_user WHERE login_id = 'never'");
         assertMutationDenied("DELETE FROM identity.app_role WHERE code = 'never'");

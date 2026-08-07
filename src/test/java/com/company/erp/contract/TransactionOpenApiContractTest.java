@@ -338,6 +338,27 @@ class TransactionOpenApiContractTest {
                 .contains("productionNo", "productNo", "qrValue", "groupNo");
         assertThat(properties(map(schemas.get("ProductionConfigurationRequest"))).keySet())
                 .doesNotContain("productionNo", "productNo", "qrValue", "groupNo");
+        Map<String, Object> groupMembers = map(
+                properties(map(schemas.get("ProductionGroupResponse"))).get("members"));
+        assertThat(map(groupMembers.get("items")).get("$ref").toString())
+                .endsWith("/ProductionGroupMemberResponse");
+        assertThat(properties(map(schemas.get("ProductionGroupMemberResponse"))).keySet())
+                .containsExactlyInAnyOrder(
+                        "id", "version", "productionNo", "productNo", "groupId", "groupNo",
+                        "buyerOrderId", "buyerOrderItemId", "productKind", "plannedQty", "status");
+        assertThat(properties(map(schemas.get("ProductionGroupMemberResponse"))).keySet())
+                .doesNotContain("configuration", "events");
+        assertBoundedText(schemas, "ProductionCommandRequest", "reason", 200);
+        assertBoundedText(schemas, "ProductionYarnLineRequest", "yarn", 120);
+        assertBoundedText(schemas, "ProductionYarnLineRequest", "yarnCode", 120);
+        assertBoundedText(schemas, "ProductionYarnLineRequest", "denier", 120);
+        assertBoundedText(schemas, "StockReturnRequest", "reason", 200);
+        assertBoundedText(schemas, "StockDisposalRequest", "reason", 200);
+        assertBoundedText(schemas, "ProductionGroupCreateRequest", "reason", 200);
+        assertBoundedText(schemas, "ProductionConfigurationRequest", "tenDia", 120);
+        assertBoundedText(schemas, "ProductionConfigurationRequest", "matDo", 120);
+        assertBoundedText(schemas, "ProductionConfigurationRequest", "pick", 120);
+        assertBoundedText(schemas, "ProductionConfigurationRequest", "remark", 200);
     }
 
     private static void assertBinaryReport(Map<String, Object> paths, String path, String mediaType) {
@@ -361,6 +382,13 @@ class TransactionOpenApiContractTest {
                         ? parameter.get("name").toString()
                         : parameter.get("$ref").toString().substring("#/components/parameters/".length()))
                 .collect(Collectors.toSet());
+    }
+
+    /** Java bean validation and the frozen contract must publish the same text bounds. */
+    private static void assertBoundedText(
+            Map<String, Object> schemas, String schemaName, String field, int maxLength) {
+        Map<String, Object> property = map(properties(map(schemas.get(schemaName))).get(field));
+        assertThat(property).as(schemaName + "." + field).containsEntry("maxLength", maxLength);
     }
 
     private static void assertArrayCap(Map<String, Object> schemas, String schemaName, String field, int max) {

@@ -56,6 +56,60 @@ class IdempotencyServiceIT {
     }
 
     @Test
+    void passesThePersistedTrustedCommandContextOnlyToTheInitialExecution() {
+        UUID actor = createActor();
+        CommandRequest request = request(actor, "trusted-context", "hash-context");
+        AtomicInteger executions = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<UUID> commandId = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<byte[]> scopeDigest = new java.util.concurrent.atomic.AtomicReference<>();
+
+        CommandResponse first = service.execute(request, context -> {
+            executions.incrementAndGet();
+            commandId.set(context.commandId());
+            scopeDigest.set(context.scopeDigest());
+            byte[] mutated = context.scopeDigest();
+            mutated[0] ^= 1;
+            assertThat(context.scopeDigest()).isNotEqualTo(mutated);
+            return CommandResult.success(json(201, "{\"created\":true}"));
+        });
+        CommandResponse replay = service.execute(request, context -> {
+            throw new AssertionError("replayed command executed with context " + context.commandId());
+        });
+
+        var persisted = jdbc.sql("""
+                        SELECT command_id, scope_digest
+                        FROM system.idempotency_record
+                        WHERE idempotency_key = 'trusted-context'
+                        """).query((rs, ignored) -> java.util.Map.entry(
+                                rs.getObject(1, UUID.class), rs.getBytes(2))).single();
+        assertThat(commandId.get()).isEqualTo(persisted.getKey());
+        assertThat(scopeDigest.get()).hasSize(32).isEqualTo(persisted.getValue());
+        assertThat(replay).isEqualTo(first);
+        assertThat(executions).hasValue(1);
+    }
+
+    @Test
+    void purgesAnExpiredCompletedResultBeforeReusingTheKey() {
+        UUID actor = createActor();
+        CommandRequest request = request(actor, "completed-expired", "hash-expired");
+        service.execute(request, () -> CommandResult.success(json(201, "{\"generation\":1}")));
+        jdbc.sql("""
+                        UPDATE system.idempotency_record
+                        SET created_at = clock_timestamp() - interval '25 hours',
+                            expires_at = clock_timestamp() - interval '1 hour'
+                        WHERE idempotency_key = 'completed-expired'
+                        """).update();
+
+        CommandResponse fresh = service.execute(request,
+                () -> CommandResult.success(json(201, "{\"generation\":2}")));
+
+        assertThat(new String(fresh.body(), StandardCharsets.UTF_8))
+                .isEqualTo("{\"generation\":2}");
+        assertThat(jdbc.sql("SELECT count(*) FROM system.idempotency_record WHERE idempotency_key = 'completed-expired'")
+                .query(Integer.class).single()).isOne();
+    }
+
+    @Test
     void rejectsTheSameScopedKeyWithAnotherHash() {
         UUID actor = createActor();
         service.execute(request(actor, "same-key", "hash-a"),
