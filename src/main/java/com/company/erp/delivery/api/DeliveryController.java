@@ -9,7 +9,9 @@ import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteCreateRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteResponse;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteUpdateRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliverySourcePageResponse;
+import com.company.erp.delivery.application.DeliveryDocumentRenderer;
 import com.company.erp.delivery.application.DeliveryService;
+import com.company.erp.reporting.ReportAdmission;
 import com.company.erp.identity.application.AdminQuery;
 import com.company.erp.identity.security.ErpPrincipal;
 import com.company.erp.system.application.IdempotencyService;
@@ -47,13 +49,18 @@ import tools.jackson.databind.ObjectMapper;
 public class DeliveryController {
 
     private final DeliveryService service;
+    private final DeliveryDocumentRenderer documentRenderer;
+    private final ReportAdmission reportAdmission;
     private final IdempotencyService idempotency;
     private final ApiProblemDetails problems;
     private final ObjectMapper objectMapper;
 
-    public DeliveryController(DeliveryService service, IdempotencyService idempotency,
+    public DeliveryController(DeliveryService service, DeliveryDocumentRenderer documentRenderer,
+            ReportAdmission reportAdmission, IdempotencyService idempotency,
             ApiProblemDetails problems, ObjectMapper objectMapper) {
         this.service = service;
+        this.documentRenderer = documentRenderer;
+        this.reportAdmission = reportAdmission;
         this.idempotency = idempotency;
         this.problems = problems;
         this.objectMapper = objectMapper;
@@ -78,6 +85,24 @@ public class DeliveryController {
     @PreAuthorize("hasAuthority('DELIVERY:VIEW')")
     ResponseEntity<DeliveryNoteResponse> get(@PathVariable UUID id) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.get(id));
+    }
+
+    /** Only a POSTED or REVERSED delivery has an official number, so only those have a document. */
+    @GetMapping(value = "/delivery-notes/{id}/document.pdf", produces = MediaType.APPLICATION_PDF_VALUE)
+    @PreAuthorize("hasAuthority('DELIVERY:PRINT')")
+    ResponseEntity<byte[]> document(@PathVariable UUID id) {
+        DeliveryNoteResponse delivery = service.get(id);
+        if (!"POSTED".equals(delivery.status()) && !"REVERSED".equals(delivery.status())) {
+            throw new ApiException(ApiErrorCode.INVALID_STATE_TRANSITION,
+                    "Only a posted or reversed Delivery Note has an official document.");
+        }
+        byte[] pdf = reportAdmission.generate(() -> documentRenderer.render(delivery));
+        String filename = delivery.deliveryNo().replaceAll("[^A-Za-z0-9._-]", "_") + ".pdf";
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .cacheControl(CacheControl.noStore())
+                .body(pdf);
     }
 
     @PostMapping("/delivery-notes")
