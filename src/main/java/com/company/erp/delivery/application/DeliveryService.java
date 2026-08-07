@@ -4,13 +4,18 @@ import com.company.erp.api.ApiErrorCode;
 import com.company.erp.api.ApiException;
 import com.company.erp.api.ResourceNotFoundException;
 import com.company.erp.audit.AuditEventWriter;
+import com.company.erp.delivery.api.DeliveryModels.DeliveryCommandRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteCreateRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteItemRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteResponse;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteUpdateRequest;
+import com.company.erp.delivery.api.DeliveryModels.DeliveryReverseResponse;
 import com.company.erp.delivery.api.DeliveryModels.DeliverySourcePageResponse;
 import com.company.erp.delivery.infrastructure.DeliveryJdbcRepository;
+import com.company.erp.delivery.infrastructure.DeliveryJdbcRepository.ItemRow;
 import com.company.erp.delivery.infrastructure.DeliveryJdbcRepository.SourceRow;
+import com.company.erp.system.application.DocumentNumberAllocator;
+import com.company.erp.system.application.DocumentType;
 import com.company.erp.identity.application.AdminQuery;
 import com.company.erp.identity.security.ErpPrincipal;
 import java.math.BigDecimal;
@@ -31,10 +36,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class DeliveryService {
 
     private final DeliveryJdbcRepository repository;
+    private final DocumentNumberAllocator numbers;
     private final AuditEventWriter auditWriter;
 
-    public DeliveryService(DeliveryJdbcRepository repository, AuditEventWriter auditWriter) {
+    public DeliveryService(DeliveryJdbcRepository repository, DocumentNumberAllocator numbers,
+            AuditEventWriter auditWriter) {
         this.repository = repository;
+        this.numbers = numbers;
         this.auditWriter = auditWriter;
     }
 
@@ -99,6 +107,159 @@ public class DeliveryService {
                 trim(request.remark()), summary(before), summary(response));
         repository.forceDeferredConstraints();
         return response;
+    }
+
+    /**
+     * Post is the only path that consumes finished stock. It re-locks every source position in
+     * ascending UUID order, re-checks capacity against the committed balance rather than what the
+     * draft saw, snapshots the authoritative monthly rate, and writes the movements, the position
+     * updates and the number allocation in one transaction.
+     */
+    @Transactional(noRollbackFor = {ApiException.class, ResourceNotFoundException.class})
+    public DeliveryNoteResponse post(UUID id, long expectedVersion, DeliveryCommandRequest request,
+            UUID commandId, ErpPrincipal actor, String requestId) {
+        repository.coordinate();
+        var header = repository.lock(id)
+                .orElseThrow(() -> new ResourceNotFoundException("delivery note", id.toString()));
+        if (header.version() != expectedVersion) {
+            throw new ApiException(ApiErrorCode.VERSION_CONFLICT,
+                    "The Delivery Note changed after it was read.");
+        }
+        if ("POSTED".equals(header.status())) {
+            throw new ApiException(ApiErrorCode.DELIVERY_ALREADY_POSTED,
+                    "The Delivery Note is already posted.");
+        }
+        if ("REVERSED".equals(header.status())) {
+            throw new ApiException(ApiErrorCode.DELIVERY_ALREADY_REVERSED,
+                    "The Delivery Note is reversed.");
+        }
+
+        DeliveryNoteResponse before = get(id);
+        var rate = repository.activeRateForMonth(before.deliveryDate())
+                .orElseThrow(() -> new ApiException(ApiErrorCode.EXCHANGE_RATE_MISSING,
+                        "No active monthly exchange rate covers the delivery date."));
+
+        List<ItemRow> items = repository.itemsForPost(id);
+        List<UUID> positionIds = items.stream().map(ItemRow::stockPositionId).sorted().toList();
+        Map<UUID, SourceRow> positions = new LinkedHashMap<>();
+        repository.lockSources(positionIds).forEach(source -> positions.put(source.id(), source));
+        if (positions.size() != positionIds.size()) {
+            throw new ApiException(ApiErrorCode.VALIDATION_FAILED,
+                    "Every delivery line must reference an existing Stock Position.");
+        }
+        for (ItemRow item : items) {
+            SourceRow position = positions.get(item.stockPositionId());
+            if (item.deliveryQty().compareTo(position.currentQty()) > 0) {
+                throw new ApiException(ApiErrorCode.INSUFFICIENT_STOCK,
+                        "Delivery quantity exceeds the available stock for this position.");
+            }
+        }
+
+        String deliveryNo = numbers.next(DocumentType.DELIVERY, before.deliveryDate().getYear());
+        for (ItemRow item : items) {
+            repository.consumeStock(positions.get(item.stockPositionId()), item, id,
+                    before.deliveryDate(), commandId, actor.user().id());
+        }
+        if (repository.markPosted(id, expectedVersion, deliveryNo, rate, actor.user().id()) != 1) {
+            throw new ApiException(ApiErrorCode.VERSION_CONFLICT,
+                    "The Delivery Note changed after it was read.");
+        }
+        repository.event(id, "POSTED", actor.user().id(), trim(request.reason()));
+        DeliveryNoteResponse response = get(id);
+        auditWriter.write(actor.user().id(), "POST", "DELIVERY_NOTE", id, requestId,
+                trim(request.reason()), summary(before), summary(response));
+        repository.forceDeferredConstraints();
+        return response;
+    }
+
+    /**
+     * Reverse restores the delivered stock and records why, then hands back one editable draft so
+     * the shipment can be reissued. Nothing is deleted: the source stays REVERSED with its number,
+     * its movements, and its history, and the replacement gets no number until it is posted itself.
+     */
+    @Transactional(noRollbackFor = {ApiException.class, ResourceNotFoundException.class})
+    public DeliveryReverseResponse reverse(UUID id, long expectedVersion, DeliveryCommandRequest request,
+            UUID commandId, ErpPrincipal actor, String requestId) {
+        repository.coordinate();
+        var header = repository.lock(id)
+                .orElseThrow(() -> new ResourceNotFoundException("delivery note", id.toString()));
+        if (header.version() != expectedVersion) {
+            throw new ApiException(ApiErrorCode.VERSION_CONFLICT,
+                    "The Delivery Note changed after it was read.");
+        }
+        if ("REVERSED".equals(header.status())) {
+            throw new ApiException(ApiErrorCode.DELIVERY_ALREADY_REVERSED,
+                    "The Delivery Note is already reversed.");
+        }
+        if (!"POSTED".equals(header.status())) {
+            throw new ApiException(ApiErrorCode.INVALID_STATE_TRANSITION,
+                    "Only a POSTED Delivery Note can be reversed.");
+        }
+        if (repository.hasReturns(id)) {
+            throw new ApiException(ApiErrorCode.DELIVERY_HAS_RETURNS,
+                    "A Delivery Note with customer returns cannot be reversed.");
+        }
+
+        DeliveryNoteResponse before = get(id);
+        List<ItemRow> items = repository.itemsForReversal(id);
+        List<UUID> positionIds = items.stream().map(ItemRow::stockPositionId).sorted().toList();
+        Map<UUID, SourceRow> positions = new LinkedHashMap<>();
+        repository.lockSources(positionIds).forEach(source -> positions.put(source.id(), source));
+
+        String reason = trim(request.reason());
+        for (ItemRow item : items) {
+            repository.restoreStock(positions.get(item.stockPositionId()), item, id,
+                    before.deliveryDate(), commandId, reason, actor.user().id());
+        }
+        if (repository.markReversed(id, expectedVersion, reason, actor.user().id()) != 1) {
+            throw new ApiException(ApiErrorCode.VERSION_CONFLICT,
+                    "The Delivery Note changed after it was read.");
+        }
+        repository.event(id, "REVERSED", actor.user().id(), reason);
+
+        UUID replacementId = createReplacementDraft(id, before, actor);
+        DeliveryNoteResponse reversed = get(id);
+        DeliveryNoteResponse replacement = get(replacementId);
+        auditWriter.write(actor.user().id(), "REVERSE", "DELIVERY_NOTE", id, requestId, reason,
+                summary(before), summary(reversed));
+        repository.forceDeferredConstraints();
+        return new DeliveryReverseResponse(reversed, replacement);
+    }
+
+    /**
+     * The replacement copies business intent only. Totals are recomputed from the copied lines
+     * rather than inherited, so a stale posted total can never become a draft's opening state.
+     */
+    private UUID createReplacementDraft(UUID sourceId, DeliveryNoteResponse source, ErpPrincipal actor) {
+        var lines = repository.replacementLines(sourceId);
+        BigDecimal totalQty = BigDecimal.ZERO;
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        Map<UUID, SourceRow> positions = new LinkedHashMap<>();
+        repository.lockSources(lines.stream()
+                        .map(line -> line.stockPositionId())
+                        .sorted()
+                        .toList())
+                .forEach(position -> positions.put(position.id(), position));
+        for (var line : lines) {
+            totalQty = totalQty.add(line.deliveryQty());
+            totalAmount = totalAmount.add(
+                    line.deliveryQty().multiply(line.unitPrice()).setScale(2, RoundingMode.HALF_UP));
+        }
+
+        UUID replacementId = repository.insertDraft(
+                source.customerId(), source.customerName(), source.customerAddress(),
+                source.deliveryDate(), source.currencyCode(), new BigDecimal(source.vatPercent()),
+                source.remark(), totalQty.setScale(4, RoundingMode.UNNECESSARY),
+                totalAmount.setScale(2, RoundingMode.UNNECESSARY), sourceId, actor.user().id());
+        int lineNo = 1;
+        for (var line : lines) {
+            repository.insertItem(replacementId, lineNo++, positions.get(line.stockPositionId()),
+                    line.deliveryQty(), line.unitPrice(),
+                    line.deliveryQty().multiply(line.unitPrice()).setScale(2, RoundingMode.HALF_UP));
+        }
+        repository.event(replacementId, "CREATED", actor.user().id(), "replaces reversed delivery");
+        repository.event(sourceId, "REPLACED", actor.user().id(), "replacement draft created");
+        return replacementId;
     }
 
     private void persistItems(UUID deliveryId, Resolved resolved) {

@@ -4,6 +4,7 @@ import com.company.erp.api.ApiErrorCode;
 import com.company.erp.api.ApiException;
 import com.company.erp.api.ApiProblemDetails;
 import com.company.erp.api.ResourceNotFoundException;
+import com.company.erp.delivery.api.DeliveryModels.DeliveryCommandRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteCreateRequest;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteResponse;
 import com.company.erp.delivery.api.DeliveryModels.DeliveryNoteUpdateRequest;
@@ -102,6 +103,72 @@ public class DeliveryController {
         long version = version(ifMatch);
         return command(200, body, ifMatch, key, authentication, request,
                 () -> service.update(id, version, body, principal(authentication), requestId(request)));
+    }
+
+    @PostMapping("/delivery-notes/{id}/post")
+    @PreAuthorize("hasAuthority('DELIVERY:POST')")
+    ResponseEntity<byte[]> post(
+            @PathVariable UUID id,
+            @Valid @RequestBody DeliveryCommandRequest body,
+            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key,
+            JwtAuthenticationToken authentication,
+            HttpServletRequest request) {
+        long version = version(ifMatch);
+        ErpPrincipal actor = principal(authentication);
+        String normalizedKey = idempotencyKey(key);
+        CommandRequest command = new CommandRequest(actor.user().id(), request.getMethod(),
+                request.getRequestURI(), normalizedKey,
+                IdempotencyService.requestHash(json(body), ifMatch), ifMatch);
+        CommandResponse response = idempotency.execute(command, execution -> {
+            try {
+                Object result = service.post(id, version, body, execution.commandId(), actor,
+                        requestId(request));
+                return CommandResult.success(new CommandResponse(
+                        200, MediaType.APPLICATION_JSON_VALUE, json(result)));
+            } catch (ApiException exception) {
+                return CommandResult.terminal(problem(exception.errorCode(), exception.getMessage(), request));
+            } catch (ResourceNotFoundException exception) {
+                return CommandResult.terminal(problem(
+                        ApiErrorCode.NOT_FOUND, "The requested resource does not exist.", request));
+            }
+        });
+        return ResponseEntity.status(response.status())
+                .contentType(MediaType.parseMediaType(response.contentType()))
+                .cacheControl(CacheControl.noStore()).body(response.body());
+    }
+
+    @PostMapping("/delivery-notes/{id}/reverse")
+    @PreAuthorize("hasAuthority('DELIVERY:REVERSE')")
+    ResponseEntity<byte[]> reverse(
+            @PathVariable UUID id,
+            @Valid @RequestBody DeliveryCommandRequest body,
+            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key,
+            JwtAuthenticationToken authentication,
+            HttpServletRequest request) {
+        long version = version(ifMatch);
+        ErpPrincipal actor = principal(authentication);
+        String normalizedKey = idempotencyKey(key);
+        CommandRequest command = new CommandRequest(actor.user().id(), request.getMethod(),
+                request.getRequestURI(), normalizedKey,
+                IdempotencyService.requestHash(json(body), ifMatch), ifMatch);
+        CommandResponse response = idempotency.execute(command, execution -> {
+            try {
+                Object result = service.reverse(id, version, body, execution.commandId(), actor,
+                        requestId(request));
+                return CommandResult.success(new CommandResponse(
+                        200, MediaType.APPLICATION_JSON_VALUE, json(result)));
+            } catch (ApiException exception) {
+                return CommandResult.terminal(problem(exception.errorCode(), exception.getMessage(), request));
+            } catch (ResourceNotFoundException exception) {
+                return CommandResult.terminal(problem(
+                        ApiErrorCode.NOT_FOUND, "The requested resource does not exist.", request));
+            }
+        });
+        return ResponseEntity.status(response.status())
+                .contentType(MediaType.parseMediaType(response.contentType()))
+                .cacheControl(CacheControl.noStore()).body(response.body());
     }
 
     private ResponseEntity<byte[]> command(int success, Object body, String ifMatch, String rawKey,

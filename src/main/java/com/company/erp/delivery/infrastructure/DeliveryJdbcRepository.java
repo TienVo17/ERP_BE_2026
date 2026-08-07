@@ -279,6 +279,210 @@ public class DeliveryJdbcRepository {
                 .update();
     }
 
+    /** The active rate for the delivery month; posting without one is a business conflict. */
+    public Optional<RateRow> activeRateForMonth(LocalDate deliveryDate) {
+        return jdbc.sql("""
+                        SELECT id, vnd_usd_rate, won_usd_rate
+                        FROM master_data.monthly_exchange_rate
+                        WHERE effective_month = date_trunc('month', CAST(:deliveryDate AS date))::date
+                          AND status = 'ACTIVE'
+                        """)
+                .param("deliveryDate", deliveryDate)
+                .query((rs, row) -> new RateRow(
+                        rs.getObject("id", UUID.class),
+                        rs.getBigDecimal("vnd_usd_rate"),
+                        rs.getBigDecimal("won_usd_rate")))
+                .optional();
+    }
+
+    public List<ItemRow> itemsForPost(UUID deliveryId) {
+        return jdbc.sql("""
+                        SELECT id, line_no, stock_position_id, delivery_qty
+                        FROM delivery.delivery_note_item
+                        WHERE delivery_note_id = :id
+                        ORDER BY stock_position_id
+                        """)
+                .param("id", deliveryId)
+                .query((rs, row) -> new ItemRow(
+                        rs.getObject("id", UUID.class),
+                        rs.getInt("line_no"),
+                        rs.getObject("stock_position_id", UUID.class),
+                        rs.getBigDecimal("delivery_qty")))
+                .list();
+    }
+
+    /** Appends the DELIVERY movement and links it to its line, keyed by the server command id. */
+    public UUID consumeStock(SourceRow position, ItemRow item, UUID deliveryId, LocalDate businessDate,
+            UUID commandId, UUID actor) {
+        BigDecimal balance = position.currentQty().subtract(item.deliveryQty());
+        UUID movementId = UUID.randomUUID();
+        jdbc.sql("""
+                        UPDATE inventory.stock_position
+                        SET delivered_qty = delivered_qty + :quantity,
+                            current_qty = current_qty - :quantity,
+                            order_balance_qty = order_qty - (delivered_qty + :quantity) + returned_qty,
+                            version = version + 1, updated_by = :actor
+                        WHERE id = :id AND version = :version
+                        """)
+                .param("quantity", item.deliveryQty())
+                .param("actor", actor)
+                .param("id", position.id())
+                .param("version", position.version())
+                .update();
+        jdbc.sql("""
+                        INSERT INTO inventory.stock_movement (
+                            id, stock_position_id, movement_type, quantity_signed, balance_after,
+                            business_date, source_type, source_id, source_item_id, idempotency_key,
+                            created_by
+                        ) VALUES (
+                            :id, :positionId, 'DELIVERY', :signed, :balance,
+                            :businessDate, 'DELIVERY', :deliveryId, :itemId, :commandId,
+                            :actor
+                        )
+                        """)
+                .param("id", movementId)
+                .param("positionId", position.id())
+                .param("signed", item.deliveryQty().negate())
+                .param("balance", balance)
+                .param("businessDate", businessDate)
+                .param("deliveryId", deliveryId)
+                .param("itemId", item.id())
+                .param("commandId", commandId + ":" + item.id())
+                .param("actor", actor)
+                .update();
+        jdbc.sql("UPDATE delivery.delivery_note_item SET delivery_movement_id = :movementId WHERE id = :id")
+                .param("movementId", movementId)
+                .param("id", item.id())
+                .update();
+        return movementId;
+    }
+
+    /** Any RETURN against this delivery's lines blocks reversal: the goods already came back. */
+    public boolean hasReturns(UUID deliveryId) {
+        return jdbc.sql("""
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM delivery.delivery_note_item dni
+                            JOIN inventory.stock_movement sm
+                                ON sm.return_source_delivery_item_id = dni.id
+                            WHERE dni.delivery_note_id = :id AND sm.movement_type = 'RETURN'
+                        )
+                        """)
+                .param("id", deliveryId)
+                .query(Boolean.class)
+                .single();
+    }
+
+    public List<ItemRow> itemsForReversal(UUID deliveryId) {
+        return jdbc.sql("""
+                        SELECT id, line_no, stock_position_id, delivery_qty, unit_price
+                        FROM delivery.delivery_note_item
+                        WHERE delivery_note_id = :id
+                        ORDER BY stock_position_id
+                        """)
+                .param("id", deliveryId)
+                .query((rs, row) -> new ItemRow(
+                        rs.getObject("id", UUID.class),
+                        rs.getInt("line_no"),
+                        rs.getObject("stock_position_id", UUID.class),
+                        rs.getBigDecimal("delivery_qty")))
+                .list();
+    }
+
+    public List<ReplacementLine> replacementLines(UUID deliveryId) {
+        return jdbc.sql("""
+                        SELECT stock_position_id, delivery_qty, unit_price
+                        FROM delivery.delivery_note_item
+                        WHERE delivery_note_id = :id
+                        ORDER BY line_no
+                        """)
+                .param("id", deliveryId)
+                .query((rs, row) -> new ReplacementLine(
+                        rs.getObject("stock_position_id", UUID.class),
+                        rs.getBigDecimal("delivery_qty"),
+                        rs.getBigDecimal("unit_price")))
+                .list();
+    }
+
+    /** Restores the position and appends the reversal movement; the DELIVERY row is never edited. */
+    public void restoreStock(SourceRow position, ItemRow item, UUID deliveryId, LocalDate businessDate,
+            UUID commandId, String reason, UUID actor) {
+        BigDecimal balance = position.currentQty().add(item.deliveryQty());
+        UUID movementId = UUID.randomUUID();
+        jdbc.sql("""
+                        UPDATE inventory.stock_position
+                        SET delivered_qty = delivered_qty - :quantity,
+                            current_qty = current_qty + :quantity,
+                            order_balance_qty = order_qty - (delivered_qty - :quantity) + returned_qty,
+                            version = version + 1, updated_by = :actor
+                        WHERE id = :id AND version = :version
+                        """)
+                .param("quantity", item.deliveryQty())
+                .param("actor", actor)
+                .param("id", position.id())
+                .param("version", position.version())
+                .update();
+        jdbc.sql("""
+                        INSERT INTO inventory.stock_movement (
+                            id, stock_position_id, movement_type, quantity_signed, balance_after,
+                            business_date, source_type, source_id, source_item_id, idempotency_key,
+                            reason, created_by
+                        ) VALUES (
+                            :id, :positionId, 'DELIVERY_REVERSAL', :signed, :balance,
+                            :businessDate, 'DELIVERY', :deliveryId, :itemId, :commandId,
+                            :reason, :actor
+                        )
+                        """)
+                .param("id", movementId)
+                .param("positionId", position.id())
+                .param("signed", item.deliveryQty())
+                .param("balance", balance)
+                .param("businessDate", businessDate)
+                .param("deliveryId", deliveryId)
+                .param("itemId", item.id())
+                .param("commandId", commandId + ":" + item.id())
+                .param("reason", reason)
+                .param("actor", actor)
+                .update();
+        jdbc.sql("UPDATE delivery.delivery_note_item SET reversal_movement_id = :movementId WHERE id = :id")
+                .param("movementId", movementId)
+                .param("id", item.id())
+                .update();
+    }
+
+    public int markReversed(UUID id, long version, String reason, UUID actor) {
+        return jdbc.sql("""
+                        UPDATE delivery.delivery_note
+                        SET status = 'REVERSED', reversed_at = clock_timestamp(), reversed_by = :actor,
+                            reversal_reason = :reason, version = version + 1, updated_by = :actor
+                        WHERE id = :id AND version = :version AND status = 'POSTED'
+                        """)
+                .param("reason", reason)
+                .param("actor", actor)
+                .param("id", id)
+                .param("version", version)
+                .update();
+    }
+
+    public int markPosted(UUID id, long version, String deliveryNo, RateRow rate, UUID actor) {
+        return jdbc.sql("""
+                        UPDATE delivery.delivery_note
+                        SET status = 'POSTED', delivery_no = :deliveryNo, exchange_rate_id = :rateId,
+                            vnd_usd_rate_snapshot = :vndRate, won_usd_rate_snapshot = :wonRate,
+                            posted_at = clock_timestamp(), posted_by = :actor,
+                            version = version + 1, updated_by = :actor
+                        WHERE id = :id AND version = :version AND status = 'DRAFT'
+                        """)
+                .param("deliveryNo", deliveryNo)
+                .param("rateId", rate.id())
+                .param("vndRate", rate.vndUsdRate())
+                .param("wonRate", rate.wonUsdRate())
+                .param("actor", actor)
+                .param("id", id)
+                .param("version", version)
+                .update();
+    }
+
     public Optional<DeliveryNoteResponse> find(UUID id) {
         Optional<DeliveryNoteResponse> header = jdbc.sql("""
                         SELECT dn.*, successor.id AS replacement_delivery_id
@@ -389,6 +593,12 @@ public class DeliveryJdbcRepository {
     }
 
     public record HeaderRow(UUID id, long version, String status, UUID customerId, String currencyCode) { }
+
+    public record RateRow(UUID id, BigDecimal vndUsdRate, BigDecimal wonUsdRate) { }
+
+    public record ItemRow(UUID id, int lineNo, UUID stockPositionId, BigDecimal deliveryQty) { }
+
+    public record ReplacementLine(UUID stockPositionId, BigDecimal deliveryQty, BigDecimal unitPrice) { }
 
     public record SourceRow(
             UUID id, UUID customerId, String customerName, String customerAddress, String currencyCode,
